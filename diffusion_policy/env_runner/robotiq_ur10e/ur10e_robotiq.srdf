@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<robot name="ur10e_robotiq" xmlns="http://www.ros.org/schema/srdf">
+
+  <!-- 虚拟关节：world → base_link -->
+  <virtual_joint name="world_joint" type="fixed">
+    <parent_frame>world</parent_frame>
+    <child_link>base_link</child_link>
+  </virtual_joint>
+
+  <!-- 规划组：机械臂 -->
+  <group name="arm">
+    <!-- 从 base_link 到 eef 定义一条关节链 -->
+    <chain base_link="base_link" tip_link="eef"/>
+  </group>
+
+  <!-- 规划组：手爪 -->
+  <group name="gripper">
+    <!-- 只规划两个外侧关节，内侧关节由 mimic 自动驱动 -->
+    <joint name="left_outer_knuckle_joint"/>
+    <joint name="right_outer_knuckle_joint"/>
+  </group>
+
+  <!-- 定义末端执行器：eef -->
+  <end_effector name="eef" group="arm" parent_link="flange" component_link="eef"/>
+
+  <!-- 被动关节（mimic）无需规划器驱动 -->
+  <passive_joint name="left_inner_knuckle_joint"/>
+  <passive_joint name="left_inner_finger_joint"/>
+  <passive_joint name="right_inner_knuckle_joint"/>
+  <passive_joint name="right_inner_finger_joint"/>
+
+  <!-- 预设姿态：rest，对应您的 Keyframe -->
+  <group_state name="rest" group="arm">
+    <!-- qpos: [0, -1.5708, 1.5708, -1.5708, -1.5708, -1.5708] -->
+    <joint name="shoulder_pan_joint"    value="0"/>
+    <joint name="shoulder_lift_joint"   value="-1.5708"/>
+    <joint name="elbow_joint"           value="1.5708"/>
+    <joint name="wrist_1_joint"         value="-1.5708"/>
+    <joint name="wrist_2_joint"         value="-1.5708"/>
+    <joint name="wrist_3_joint"         value="-1.5708"/>
+  </group_state>
+
+  <!-- 禁用内部碰撞对，避免手爪自碰报错 -->
+  <disable_collisions link1="left_outer_knuckle"           link2="left_inner_knuckle"           reason="adjacent"/>
+  <disable_collisions link1="left_outer_knuckle"           link2="left_inner_finger"            reason="adjacent"/>
+  <disable_collisions link1="left_inner_knuckle"           link2="left_inner_finger"            reason="adjacent"/>
+  <disable_collisions link1="right_outer_knuckle"          link2="right_inner_knuckle"          reason="adjacent"/>
+  <disable_collisions link1="right_outer_knuckle"          link2="right_inner_finger"           reason="adjacent"/>
+  <disable_collisions link1="right_inner_knuckle"          link2="right_inner_finger"           reason="adjacent"/>
+  <disable_collisions link1="robotiq_arg2f_base_link"      link2="left_inner_knuckle"           reason="fixed"/>
+  <disable_collisions link1="robotiq_arg2f_base_link"      link2="right_inner_knuckle"          reason="fixed"/>
+  <disable_collisions link1="robotiq_arg2f_base_link"      link2="left_outer_finger"          reason="fixed"/>
+  <disable_collisions link1="robotiq_arg2f_base_link"      link2="right_outer_finger"         reason="fixed"/>
+  <disable_collisions link1="left_inner_knuckle"      link2="left_outer_finger"         reason="adjacent"/>
+  <disable_collisions link1="right_inner_knuckle"     link2="right_outer_finger"        reason="adjacent"/>
+  <disable_collisions link1="robotiq_arg2f_base_link"      link2="left_inner_finger"         reason="adjacent"/>
+  <disable_collisions link1="robotiq_arg2f_base_link"      link2="right_inner_finger"        reason="adjacent"/>
+  <disable_collisions link1="left_inner_knuckle"      link2="right_inner_knuckle"         reason="adjacent"/>
+  <disable_collisions link1="left_inner_knuckle"       link2="right_outer_knuckle"          reason="adjacent"/>
+  <disable_collisions link1="right_inner_knuckle"      link2="left_outer_knuckle"           reason="adjacent"/>
+</robot>
