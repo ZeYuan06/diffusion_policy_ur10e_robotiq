@@ -432,4 +432,68 @@ class RealEnv:
         if this_video_dir.exists():
             shutil.rmtree(str(this_video_dir))
         print(f'Episode {episode_id} dropped!')
+    
+    # ========= debug methods =============
+    def debug_rtde_observations(self):
+        """Debug method: Get all observation keys and their value shapes available from RTDE"""
+        assert self.is_ready, "Robot must be ready before debugging"
+        
+        print("=" * 60)
+        print("RTDE Observations Debug Information")
+        print("=" * 60)
+        
+        # Get all state data
+        all_state_data = self.robot.get_all_state()
+        
+        print(f"Available RTDE receive keys: {self.robot.receive_keys}")
+        print()
+        
+        # Display information for each key
+        for key in all_state_data.keys():
+            value = all_state_data[key]
+            if isinstance(value, np.ndarray):
+                print(f"Key: {key:<25} | Shape: {value.shape:<15} | Dtype: {value.dtype:<10} | Sample: {value[:3] if len(value) > 3 else value}")
+            else:
+                print(f"Key: {key:<25} | Type: {type(value).__name__:<15} | Value: {value}")
+        
+        print()
+        print("Current observation key mapping:")
+        for rtde_key, obs_key in self.obs_key_map.items():
+            if rtde_key in all_state_data:
+                value = all_state_data[rtde_key]
+                if isinstance(value, np.ndarray):
+                    print(f"  {rtde_key} -> {obs_key:<20} | Shape: {value.shape}")
+                else:
+                    print(f"  {rtde_key} -> {obs_key:<20} | Type: {type(value).__name__}")
+            else:
+                print(f"  {rtde_key} -> {obs_key:<20} | NOT FOUND in RTDE data")
+        
+        print()
+        print("Keys available in RTDE but not in observation mapping:")
+        unmapped_keys = set(all_state_data.keys()) - set(self.obs_key_map.keys())
+        for key in sorted(unmapped_keys):
+            value = all_state_data[key]
+            if isinstance(value, np.ndarray):
+                print(f"  {key:<30} | Shape: {value.shape:<15} | Dtype: {value.dtype}")
+            else:
+                print(f"  {key:<30} | Type: {type(value).__name__:<15} | Value: {value}")
+        
+        print("=" * 60)
+        return all_state_data
+    
+    @classmethod 
+    def debug_rtde_standalone(cls, robot_ip, **kwargs):
+        """Standalone debug method: Create temporary environment to debug RTDE observations"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = cls(
+                output_dir=temp_dir,
+                robot_ip=robot_ip,
+                **kwargs
+            )
+            try:
+                env.start(wait=True)
+                return env.debug_rtde_observations()
+            finally:
+                env.stop(wait=True)
 
