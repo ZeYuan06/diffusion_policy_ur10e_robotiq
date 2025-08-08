@@ -391,13 +391,6 @@ class RealEnv:
 
         # schedule joint waypoints
         for i in range(len(new_joint_actions)):
-            # Print action to be executed and wait for user confirmation
-            print(f"Action {i+1}/{len(new_joint_actions)}: {new_joint_actions[i] * 180/np.pi}")
-            print("Press 'y' to execute this action or any other key to skip:")
-            user_input = input().strip().lower()
-            if user_input != 'y':
-                print(f"Skipping action {i+1}")
-                continue
             self.robot.schedule_joint_waypoint(
                 joints=new_joint_actions[i],
                 target_time=new_timestamps[i]
@@ -426,13 +419,6 @@ class RealEnv:
             speed: Gripper speed [0-255]
             force: Gripper force [0-255]
         """
-        # Print action to be executed and wait for user confirmation
-        print(f"Action: {gripper_pos:.3f}, speed: {speed}, force: {force}")
-        print("Press 'y' to execute this action or any other key to skip:")
-        user_input = input().strip().lower()
-        if user_input != 'y':
-            print(f"Skipping action")
-            return
         self.robot.command_gripper(gripper_pos, speed, force)
     
     def exec_gripper_action(self, gripper_pos, timestamp):

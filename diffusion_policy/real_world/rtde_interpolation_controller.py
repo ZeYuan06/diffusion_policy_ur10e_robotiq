@@ -217,7 +217,7 @@ class RTDEInterpolationController(mp.Process):
         self.joints_init_speed = joints_init_speed
         self.soft_real_time = soft_real_time
         self.verbose = verbose
-        self.use_gripper = use_gripper  # 现在总是可用，因为我们集成了RobotiqGripper类
+        self.use_gripper = use_gripper
         self.gripper_port = gripper_port
 
         # build input queue
@@ -366,7 +366,7 @@ class RTDEInterpolationController(mp.Process):
             'cmd': Command.SCHEDULE_JOINT_WAYPOINT.value,
             'target_joints': joints,
             'target_time': target_time,
-            'duration': 0.1,
+            'duration': 0.05,
             'gripper_pos': 0.0,
             'gripper_speed': 100.0,
             'gripper_force': 50.0,
@@ -510,8 +510,8 @@ class RTDEInterpolationController(mp.Process):
                 joint_command_list = joint_command.tolist() if hasattr(joint_command, 'tolist') else list(joint_command)
                 
                 # Use single values for velocity and acceleration (not per-joint)
-                vel = 1.05   # Joint velocity (rad/s)
-                acc = 1.4    # Joint acceleration (rad/s^2)
+                vel = 1   # Joint velocity (rad/s)
+                acc = 1    # Joint acceleration (rad/s^2)
                 
                 # Use servoJ for joint control with proper parameters
                 # servoJ(q, a, v, t, lookahead_time, gain)
