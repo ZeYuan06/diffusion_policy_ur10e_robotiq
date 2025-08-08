@@ -231,7 +231,116 @@ def load_dataset_episodes(zarr_path, num_episodes=3):
         return []
 
 
-OmegaConf.register_new_resolver("eval", eval, replace=True)
+def process_policy_action(action):
+    """
+    Process and analyze policy action
+    
+    Args:
+        action: Policy action array
+        
+    Returns:
+        dict: Action information including shape, joint actions, gripper actions
+    """
+    action_info = {
+        'shape': action.shape,
+        'joint_actions': action[:, :6] if action.shape[-1] >= 6 else action,
+        'has_gripper': action.shape[-1] >= 7,
+        'gripper_actions': action[:, 6] if action.shape[-1] >= 7 else None
+    }
+    return action_info
+
+
+def process_action_timing(action, obs_timestamp, action_offset, dt, eval_t_start, delta_action):
+    """
+    Process action timing and filter valid actions
+    
+    Args:
+        action: Policy action array
+        obs_timestamp: Latest observation timestamp
+        action_offset: Action offset for timing
+        dt: Time step
+        eval_t_start: Episode start time
+        delta_action: Whether using delta actions
+        
+    Returns:
+        dict: Timing information and filtered commands
+    """
+    # Calculate action timestamps
+    action_timestamps = (np.arange(len(action), dtype=np.float64) + action_offset) * dt + obs_timestamp
+    
+    # Check which actions are valid (not too late)
+    action_exec_latency = 0.01
+    curr_time = time.time()
+    is_new = action_timestamps > (curr_time + action_exec_latency)
+    
+    # Extract joint commands (first 6 dimensions)
+    joint_commands = action[:, :6]
+    
+    # Extract gripper commands if available
+    gripper_commands = None
+    gripper_timestamps = None
+    if action.shape[-1] >= 7:
+        if delta_action:
+            gripper_commands = action[-1][6:7]  # Last gripper action for delta mode
+            gripper_timestamps = action_timestamps[-1:]
+        else:
+            gripper_commands = action[:, 6:7]  # All gripper actions
+            gripper_timestamps = action_timestamps.copy()
+    
+    # Handle timing budget
+    over_budget = False
+    budget_info = ""
+    
+    if np.sum(is_new) == 0:
+        # Exceeded time budget, use last action and schedule for next step
+        over_budget = True
+        joint_commands = joint_commands[[-1]]
+        next_step_idx = int(np.ceil((curr_time - eval_t_start) / dt))
+        action_timestamp = eval_t_start + (next_step_idx) * dt
+        action_timestamps = np.array([action_timestamp])
+        budget_info = f"next action in {action_timestamp - curr_time:.3f}s"
+        
+        # Update gripper for over budget case
+        if gripper_commands is not None:
+            gripper_commands = gripper_commands[-1:] if len(gripper_commands) > 1 else gripper_commands
+            gripper_timestamps = action_timestamps.copy()
+    else:
+        # Filter to valid actions
+        joint_commands = joint_commands[is_new]
+        action_timestamps = action_timestamps[is_new]
+        
+        # Update gripper timestamps for valid actions
+        if gripper_commands is not None and gripper_timestamps is not None:
+            gripper_commands = gripper_commands[is_new] if len(gripper_commands) > 1 else gripper_commands
+            gripper_timestamps = gripper_timestamps[is_new] if len(gripper_timestamps) > 1 else gripper_timestamps
+    
+    return {
+        'joint_commands': joint_commands,
+        'joint_timestamps': action_timestamps,
+        'gripper_commands': gripper_commands,
+        'gripper_timestamps': gripper_timestamps,
+        'over_budget': over_budget,
+        'budget_info': budget_info
+    }
+
+
+def execute_gripper_actions(env, gripper_commands, gripper_timestamps):
+    """
+    Execute gripper actions
+    
+    Args:
+        env: Robot environment
+        gripper_commands: Gripper position commands
+        gripper_timestamps: Timestamps for gripper commands
+    """
+    if gripper_commands is not None and gripper_timestamps is not None:
+        for i, (grip_action, grip_timestamp) in enumerate(zip(gripper_commands, gripper_timestamps)):
+            # Clip gripper action to valid range [0,1]
+            gripper_pos = np.clip(grip_action[0], 0.0, 1.0)
+            env.exec_gripper_action(gripper_pos, grip_timestamp)
+            if i == 0:  # Only print for first action to avoid spam
+                print(f"Gripper command: pos={gripper_pos:.3f}")
+
 
 @click.command()
 @click.option('--zarr_path', '-z', required=True, help='Path to zarr dataset')
@@ -241,7 +350,7 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 @click.option('--vis_camera_idx', default=0, type=int, help="Which RealSense camera to visualize.")
 @click.option('--init_joints', '-j', is_flag=True, default=False, help="Whether to initialize robot joint configuration in the beginning.")
 @click.option('--steps_per_inference', '-si', default=6, type=int, help="Action horizon for inference.")
-@click.option('--max_duration', '-md', default=60, help='Max duration for each epoch in seconds.')
+@click.option('--max_duration', '-md', default=180, help='Max duration for each epoch in seconds.')
 @click.option('--frequency', '-f', default=20, type=float, help="Control frequency in Hz.")
 @click.option('--command_latency', '-cl', default=0.01, type=float, help="Latency between receiving command to executing on Robot in Sec.")
 def main(zarr_path, output, robot_ip, num_episodes,
@@ -347,30 +456,47 @@ def main(zarr_path, output, robot_ip, num_episodes,
                 # Get current robot state
                 state = env.get_robot_state()
                 current_joints = state.get('ActualQ', np.zeros(6))
-                current_pose = state.get('ActualTCPPose', np.zeros(6))
+                current_tcp_pose = state.get('ActualTCPPose', np.zeros(6))
                 print(f"Current joints (rad): {current_joints}")
-                print(f"Current TCP pose: {current_pose}")
+                print(f"Current TCP pose: {current_tcp_pose}")
                 
-                # Use home joint position to determine target pose
-                # Calculate TCP pose for home joint configuration, but keep current orientation
-                # For UR5/UR10 with home joints [0,-90,-90,-90,90,0] degrees
-                # This typically results in TCP position approximately at (x=0.0, y=-0.4, z=0.4)
-                home_tcp_position = np.array([0.0, -0.4, 0.4])  # x, y, z from home joints
-                
-                # Use current pose orientation to maintain robot's current orientation
-                current_orientation = current_pose[3:6]  # rx, ry, rz from current pose
-                
-                # Combine home position with current orientation
-                target_pose = np.concatenate([home_tcp_position, current_orientation])
-                print(f"Target pose: position from home joints + current orientation: {target_pose}")
-                print(f"  Home position: {home_tcp_position}")
-                print(f"  Current orientation: {current_orientation}")
-                
-                # Get current state after pose calculation
-                state = env.get_robot_state()
-                current_tcp_pose = state['ActualTCPPose']
-                print(f"Current robot TCP pose: {current_tcp_pose}")
-                print(f"Target pose set to: {target_pose} (based on home joint position)")
+                # Move robot to home joint position directly using joint control
+                print("Moving robot to home joint position...")
+                try:
+                    # Use joint control to move to home position
+                    # Create a timestamp slightly in the future
+                    move_timestamp = time.time() + 1
+                    
+                    # Execute joint movement to home position
+                    env.exec_joint_actions(
+                        joint_actions=home_joints.reshape(1, -1),  # Shape: (1, 6)
+                        timestamps=np.array([move_timestamp])      # Shape: (1,)
+                    )
+                    
+                    print("Joint movement command sent, waiting for completion...")
+                    # Wait for movement to complete
+                    time.sleep(3.0)  # Give time for robot to reach home position
+                    
+                    # Get updated robot state
+                    state = env.get_robot_state()
+                    current_joints_after = state.get('ActualQ', np.zeros(6))
+                    current_tcp_pose_after = state.get('ActualTCPPose', np.zeros(6))
+                    print(f"After movement - joints (rad): {current_joints_after}")
+                    print(f"After movement - TCP pose: {current_tcp_pose_after}")
+                    
+                    # Check if we reached the target
+                    joint_error = np.abs(current_joints_after - home_joints)
+                    max_joint_error = np.max(joint_error)
+                    print(f"Joint positioning error: max={max_joint_error:.4f} rad ({max_joint_error*180/np.pi:.2f} deg)")
+                    
+                    if max_joint_error < 0.05:  # Within 3 degrees
+                        print("Successfully moved to home position!")
+                    else:
+                        print("Warning: Robot may not have reached exact home position")
+                        
+                except Exception as e:
+                    print(f"Failed to move to home position: {e}")
+                    print("Continuing with current position...")
                 
                 # Visual feedback
                 t_start = time.monotonic()
@@ -461,74 +587,41 @@ def main(zarr_path, output, robot_ip, num_episodes,
                             print('Inference latency:', time.time() - s)
                         
                         # convert policy action to env actions
-                        print(f"Action shape: {action.shape}")
-                        if action.shape[-1] >= 6:
-                            print(f"Joint actions (0:6): {action[:, :6] if action.shape[-1] >= 6 else action}")
-                        if action.shape[-1] >= 7:
-                            print(f"Gripper actions (6): {action[:, 6]}")
+                        action_info = process_policy_action(action)
+                        print(f"Action shape: {action_info['shape']}")
+                        print(f"Joint actions (0:6): {action_info['joint_actions']}")
+                        if action_info['has_gripper']:
+                            print(f"Gripper actions (6): {action_info['gripper_actions']}")
                         
-                        # Use action directly as joint commands (6 dimensions)
-                        this_target_joints = action[:, :6]  # Use first 6 dimensions as joint commands
-                        
-                        # No need for delta action processing with joint control
-                        # Joint commands are absolute positions
-
-                        # deal with timing
-                        # the same step actions are always the target for
-                        action_timestamps = (np.arange(len(action), dtype=np.float64) + action_offset
-                            ) * dt + obs_timestamps[-1]
-                        action_exec_latency = 0.01
-                        curr_time = time.time()
-                        is_new = action_timestamps > (curr_time + action_exec_latency)
-                        
-                        # Handle gripper actions timing
-                        gripper_actions = None
-                        gripper_timestamps = None
-                        if action.shape[-1] >= 7:
-                            if delta_action:
-                                gripper_actions = action[-1][6:7]  # 7th dimension is gripper action
-                                gripper_timestamps = action_timestamps[-1:]  # Use last timestamp for delta mode
-                            else:
-                                gripper_actions = action[:,6:7]  # 7th dimension is gripper action
-                                gripper_timestamps = action_timestamps.copy()
-                        
-                        if np.sum(is_new) == 0:
-                            # exceeded time budget, still do something
-                            this_target_joints = this_target_joints[[-1]]
-                            # schedule on next available step
-                            next_step_idx = int(np.ceil((curr_time - eval_t_start) / dt))
-                            action_timestamp = eval_t_start + (next_step_idx) * dt
-                            print('Over budget', action_timestamp - curr_time)
-                            action_timestamps = np.array([action_timestamp])
-                        else:
-                            this_target_joints = this_target_joints[is_new]
-                            action_timestamps = action_timestamps[is_new]
-                            # Update gripper timestamps for valid actions
-                            if gripper_actions is not None and gripper_timestamps is not None:
-                                gripper_actions = gripper_actions[is_new] if len(gripper_actions) > 1 else gripper_actions
-                                gripper_timestamps = gripper_timestamps[is_new] if len(gripper_timestamps) > 1 else gripper_timestamps
-
-                        # Joint angles don't need clipping like pose positions
-                        # But we can add safety limits if needed
-                        # this_target_joints = np.clip(this_target_joints, joint_min_limits, joint_max_limits)
-
-                        # execute joint actions
-                        env.exec_joint_actions(
-                            joint_actions=this_target_joints,
-                            timestamps=action_timestamps
+                        # Handle action timing and filtering
+                        timing_info = process_action_timing(
+                            action, obs_timestamps[-1], action_offset, dt, 
+                            eval_t_start, delta_action
                         )
                         
-                        # execute gripper actions
-                        if gripper_actions is not None and gripper_timestamps is not None:
-                            for i, (grip_action, grip_timestamp) in enumerate(zip(gripper_actions, gripper_timestamps)):
-                                # Clip gripper action to valid range [0,1]
-                                gripper_pos = np.clip(grip_action[0], 0.0, 1.0)
-                                env.exec_gripper_action(gripper_pos, grip_timestamp)
-                                if i == 0:  # Only print for first action to avoid spam
-                                    print(f"Gripper command: pos={gripper_pos:.3f}")
+                        joint_commands = timing_info['joint_commands']
+                        joint_timestamps = timing_info['joint_timestamps']
+                        gripper_commands = timing_info['gripper_commands']
+                        gripper_timestamps = timing_info['gripper_timestamps']
                         
-                        print(f"Submitted {len(this_target_joints)} joint commands" + 
-                              (f" with {len(gripper_actions)} gripper commands" if gripper_actions is not None else "") + ".")
+                        if timing_info['over_budget']:
+                            print(f'Over budget: {timing_info["budget_info"]}')
+
+                        # Execute joint actions
+                        env.exec_joint_actions(
+                            joint_actions=joint_commands,
+                            timestamps=joint_timestamps
+                        )
+                        
+                        # Execute gripper actions
+                        execute_gripper_actions(env, gripper_commands, gripper_timestamps)
+                        
+                        # Print execution summary
+                        summary = f"Submitted {len(joint_commands)} joint commands"
+                        if gripper_commands is not None and len(gripper_commands) > 0:
+                            summary += f" with {len(gripper_commands)} gripper commands"
+                        summary += "."
+                        print(summary)
 
                         # visualize
                         episode_id = env.replay_buffer.n_episodes
