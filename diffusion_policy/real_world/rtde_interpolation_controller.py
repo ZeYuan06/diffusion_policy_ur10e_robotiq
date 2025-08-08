@@ -225,7 +225,9 @@ class RTDEInterpolationController(mp.Process):
             'target_pose': np.zeros((6,), dtype=np.float64),
             'duration': 0.0,
             'target_time': 0.0,
-            'gripper_pos': 0.0
+            'gripper_pos': 0.0, 
+            'gripper_speed': 100.0,
+            'gripper_force': 50.0
         }
         input_queue = SharedMemoryQueue.create_from_examples(
             shm_manager=shm_manager,
@@ -318,12 +320,20 @@ class RTDEInterpolationController(mp.Process):
         message = {
             'cmd': Command.SERVOL.value,
             'target_pose': pose,
-            'duration': duration
+            'duration': duration,
+            'target_time': 0.0,
+            'gripper_pos': 0.0, 
+            'gripper_speed': 100.0,  
+            'gripper_force': 50.0 
         }
         self.input_queue.put(message)
     
     def schedule_waypoint(self, pose, target_time):
-        assert target_time > time.time()
+        """
+        Pose: 6D end-effector pose
+        target_time: absolute time in seconds
+        """
+        assert self.is_alive()
         pose = np.array(pose)
         assert pose.shape == (6,)
 
@@ -331,7 +341,10 @@ class RTDEInterpolationController(mp.Process):
             'cmd': Command.SCHEDULE_WAYPOINT.value,
             'target_pose': pose,
             'target_time': target_time,
-            'gripper_pos': 0.0
+            'duration': 0.1, 
+            'gripper_pos': 0.0,
+            'gripper_speed': 100.0,
+            'gripper_force': 50.0,
         }
         self.input_queue.put(message)
     

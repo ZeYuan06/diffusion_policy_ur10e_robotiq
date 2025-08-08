@@ -155,8 +155,8 @@ def main(input, output, robot_ip, match_dataset, match_episode,
             thread_per_video=3,
             # video recording quality, lower is better (but slower).
             video_crf=21,
-            use_gripper=True,        # 启用夹爪支持
-            gripper_port=63352,      # 夹爪端口
+            use_gripper=True,
+            gripper_port=63352,
             shm_manager=shm_manager) as env:
             cv2.setNumThreads(1)
 

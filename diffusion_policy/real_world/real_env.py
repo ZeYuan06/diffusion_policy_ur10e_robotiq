@@ -470,7 +470,7 @@ class RealEnv:
         for key in all_state_data.keys():
             value = all_state_data[key]
             if isinstance(value, np.ndarray):
-                print(f"Key: {key:<25} | Shape: {value.shape:<15} | Dtype: {value.dtype:<10} | Sample: {value[:3] if len(value) > 3 else value}")
+                print(f"Key: {key:<25} | Shape: {str(value.shape):<15} | Dtype: {value.dtype:<10} | Sample: {value[:3] if len(value) > 3 else value}")
             else:
                 print(f"Key: {key:<25} | Type: {type(value).__name__:<15} | Value: {value}")
         
@@ -480,7 +480,7 @@ class RealEnv:
             if rtde_key in all_state_data:
                 value = all_state_data[rtde_key]
                 if isinstance(value, np.ndarray):
-                    print(f"  {rtde_key} -> {obs_key:<20} | Shape: {value.shape}")
+                    print(f"  {rtde_key} -> {obs_key:<20} | Shape: {str(value.shape)}")
                 else:
                     print(f"  {rtde_key} -> {obs_key:<20} | Type: {type(value).__name__}")
             else:
@@ -492,7 +492,7 @@ class RealEnv:
         for key in sorted(unmapped_keys):
             value = all_state_data[key]
             if isinstance(value, np.ndarray):
-                print(f"  {key:<30} | Shape: {value.shape:<15} | Dtype: {value.dtype}")
+                print(f"  {key:<30} | Shape: {str(value.shape):<15} | Dtype: {value.dtype}")
             else:
                 print(f"  {key:<30} | Type: {type(value).__name__:<15} | Value: {value}")
         
