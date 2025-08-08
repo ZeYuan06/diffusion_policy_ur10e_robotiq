@@ -481,12 +481,18 @@ class RTDEInterpolationController(mp.Process):
             # main loop
             dt = 1. / self.frequency
             curr_pose = rtde_r.getActualTCPPose()
+            curr_joints = rtde_r.getActualQ()  # Get current joint positions
             # use monotonic time to make sure the control loop never go backward
             curr_t = time.monotonic()
             last_waypoint_time = curr_t
             pose_interp = PoseTrajectoryInterpolator(
                 times=[curr_t],
                 poses=[curr_pose]
+            )
+            # Create joint interpolator for joint control
+            joint_interp = PoseTrajectoryInterpolator(
+                times=[curr_t],
+                poses=[curr_joints]
             )
             
             iter_idx = 0
@@ -497,17 +503,13 @@ class RTDEInterpolationController(mp.Process):
 
                 # send command to robot
                 t_now = time.monotonic()
-                # diff = t_now - pose_interp.times[-1]
-                # if diff > 0:
-                #     print('extrapolate', diff)
-                pose_command = pose_interp(t_now)
-                vel = 0.5
-                acc = 0.5
-                assert rtde_c.servoL(pose_command, 
-                    vel, acc, # dummy, not used by ur5
-                    dt, 
-                    self.lookahead_time, 
-                    self.gain)
+
+                # Use joint control mode
+                joint_command = joint_interp(t_now)
+                vel = [1.05] * 6  # Joint velocities for each joint
+                acc = [1.4] * 6   # Joint accelerations for each joint
+                # Use servoJ for joint control
+                assert rtde_c.servoJ(joint_command, vel, acc, dt)
                 
                 # update robot state
                 state = dict()
@@ -580,21 +582,20 @@ class RTDEInterpolationController(mp.Process):
                         target_time = float(command['target_time'])
                         # translate global time to monotonic time
                         target_time = time.monotonic() - time.time() + target_time
+                        curr_time = t_now + dt
                         
-                        # Execute joint movement using moveJ
-                        # For joint movements, we use moveJ which is more direct
+                        # Use joint interpolator for smooth joint movement
+                        joint_interp = joint_interp.schedule_waypoint(
+                            pose=target_joints,
+                            time=target_time,
+                            max_pos_speed=self.max_pos_speed,
+                            max_rot_speed=self.max_rot_speed,
+                            curr_time=curr_time,
+                            last_waypoint_time=last_waypoint_time
+                        )
+                        last_waypoint_time = target_time
                         if self.verbose:
-                            print(f"[RTDEPositionalController] Moving to joint target: {target_joints} at time: {target_time}")
-                        
-                        # Schedule the joint movement
-                        # Note: moveJ is blocking, so we need to be careful about timing
-                        try:
-                            rtde_c.moveJ(target_joints, 1.4, 1.05)  # speed=1.4 rad/s, acceleration=1.05 rad/s^2
-                            if self.verbose:
-                                print(f"[RTDEPositionalController] Joint movement completed")
-                        except Exception as e:
-                            if self.verbose:
-                                print(f"[RTDEPositionalController] Joint movement failed: {e}")
+                            print(f"[RTDEPositionalController] New joint target: {target_joints} at time: {target_time}")
                     elif cmd == Command.GRIPPER_MOVE.value:
                         if gripper is not None:
                             try:

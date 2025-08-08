@@ -392,7 +392,7 @@ class RealEnv:
         # schedule joint waypoints
         for i in range(len(new_joint_actions)):
             # Print action to be executed and wait for user confirmation
-            print(f"Action {i+1}/{len(new_joint_actions)}: {new_joint_actions[i]}")
+            print(f"Action {i+1}/{len(new_joint_actions)}: {new_joint_actions[i] * 180/np.pi}")
             print("Press 'y' to execute this action or any other key to skip:")
             user_input = input().strip().lower()
             if user_input != 'y':
