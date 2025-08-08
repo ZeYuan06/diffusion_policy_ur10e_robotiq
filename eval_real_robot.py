@@ -179,7 +179,11 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                     lambda x: torch.from_numpy(x).unsqueeze(0).to(device))
                 result = policy.predict_action(obs_dict)
                 action = result['action'][0].detach().to('cpu').numpy()
-                assert action.shape[-1] == 2
+                print(f"Warmup action shape: {action.shape}")
+                # Action should be at least 2D (position) and may include gripper (7D total)
+                assert action.shape[-1] >= 2, f"Expected action dimension >= 2, got {action.shape[-1]}"
+                if action.shape[-1] >= 7:
+                    print("Policy outputs include gripper control")
                 del result
 
             print('Ready!')
@@ -306,18 +310,24 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                             print('Inference latency:', time.time() - s)
                         
                         # convert policy action to env actions
+                        print(f"Action shape: {action.shape}")
+                        if action.shape[-1] >= 6:
+                            print(f"Pose actions: {action[:, :6] if action.shape[-1] >= 6 else action}")
+                        if action.shape[-1] >= 7:
+                            print(f"Gripper actions: {action[:, 6]}")
+                        
                         if delta_action:
                             assert len(action) == 1
                             if perv_target_pose is None:
                                 perv_target_pose = obs['robot_eef_pose'][-1]
                             this_target_pose = perv_target_pose.copy()
-                            this_target_pose[[0,1]] += action[-1]
+                            this_target_pose[[0,1]] += action[-1][:2]  # Only use first 2 dimensions for position
                             perv_target_pose = this_target_pose
                             this_target_poses = np.expand_dims(this_target_pose, axis=0)
                         else:
                             this_target_poses = np.zeros((len(action), len(target_pose)), dtype=np.float64)
                             this_target_poses[:] = target_pose
-                            this_target_poses[:,[0,1]] = action
+                            this_target_poses[:,[0,1]] = action[:,:2]  # Use first 2 dimensions for position control
 
                         # deal with timing
                         # the same step actions are always the target for
@@ -326,6 +336,18 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                         action_exec_latency = 0.01
                         curr_time = time.time()
                         is_new = action_timestamps > (curr_time + action_exec_latency)
+                        
+                        # Handle gripper actions timing
+                        gripper_actions = None
+                        gripper_timestamps = None
+                        if action.shape[-1] >= 7:
+                            if delta_action:
+                                gripper_actions = action[-1][6:7]  # 7th dimension is gripper action
+                                gripper_timestamps = action_timestamps[-1:]  # Use last timestamp for delta mode
+                            else:
+                                gripper_actions = action[:,6:7]  # 7th dimension is gripper action
+                                gripper_timestamps = action_timestamps.copy()
+                        
                         if np.sum(is_new) == 0:
                             # exceeded time budget, still do something
                             this_target_poses = this_target_poses[[-1]]
@@ -337,6 +359,10 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                         else:
                             this_target_poses = this_target_poses[is_new]
                             action_timestamps = action_timestamps[is_new]
+                            # Update gripper timestamps for valid actions
+                            if gripper_actions is not None and gripper_timestamps is not None:
+                                gripper_actions = gripper_actions[is_new] if len(gripper_actions) > 1 else gripper_actions
+                                gripper_timestamps = gripper_timestamps[is_new] if len(gripper_timestamps) > 1 else gripper_timestamps
 
                         # clip actions
                         this_target_poses[:,:2] = np.clip(
@@ -347,7 +373,18 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                             actions=this_target_poses,
                             timestamps=action_timestamps
                         )
-                        print(f"Submitted {len(this_target_poses)} steps of actions.")
+                        
+                        # execute gripper actions
+                        if gripper_actions is not None and gripper_timestamps is not None:
+                            for i, (grip_action, grip_timestamp) in enumerate(zip(gripper_actions, gripper_timestamps)):
+                                # Clip gripper action to valid range [0,1]
+                                gripper_pos = np.clip(grip_action[0], 0.0, 1.0)
+                                env.exec_gripper_action(gripper_pos, grip_timestamp)
+                                if i == 0:  # Only print for first action to avoid spam
+                                    print(f"Gripper command: pos={gripper_pos:.3f}")
+                        
+                        print(f"Submitted {len(this_target_poses)} steps of actions" + 
+                              (f" with {len(gripper_actions)} gripper commands" if gripper_actions is not None else "") + ".")
 
                         # visualize
                         episode_id = env.replay_buffer.n_episodes

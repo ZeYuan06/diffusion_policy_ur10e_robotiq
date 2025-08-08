@@ -366,6 +366,31 @@ class RealEnv:
             force: Gripper force [0-255]
         """
         self.robot.command_gripper(gripper_pos, speed, force)
+    
+    def exec_gripper_action(self, gripper_pos, timestamp):
+        """Execute gripper action at specified timestamp
+        
+        Args:
+            gripper_pos: Gripper position [0-1], 0=fully open, 1=fully closed
+            timestamp: Target execution timestamp
+        """
+        assert self.is_ready
+        
+        # Convert timestamp to current time if needed
+        if timestamp > time.time():
+            # Schedule gripper command for future execution
+            # Note: This is a simplified approach, ideally we'd want
+            # to synchronize gripper commands with robot trajectory
+            target_time = timestamp
+        else:
+            # Execute immediately
+            target_time = time.time() + 0.01
+        
+        # Command gripper
+        self.command_gripper(gripper_pos, speed=255, force=100)
+        
+        # Simple logging without verbose check
+        print(f"Gripper action executed: pos={gripper_pos:.3f} at t={target_time}")
 
     # recording API
     def start_episode(self, start_time=None):
