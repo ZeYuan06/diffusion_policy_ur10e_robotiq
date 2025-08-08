@@ -1,8 +1,11 @@
 import os
 import time
 import enum
+import socket
+import threading
 import multiprocessing as mp
 from multiprocessing.managers import SharedMemoryManager
+from typing import OrderedDict, Tuple, Union
 import scipy.interpolate as si
 import scipy.spatial.transform as st
 import numpy as np
@@ -13,10 +16,127 @@ from diffusion_policy.shared_memory.shared_memory_queue import (
 from diffusion_policy.shared_memory.shared_memory_ring_buffer import SharedMemoryRingBuffer
 from diffusion_policy.common.pose_trajectory_interpolator import PoseTrajectoryInterpolator
 
+
+class RobotiqGripper:
+    """Communicates with the gripper directly, via socket with string commands, leveraging string names for variables."""
+
+    # WRITE VARIABLES (CAN ALSO READ)
+    ACT = "ACT"  # act : activate (1 while activated, can be reset to clear fault status)
+    GTO = "GTO"  # gto : go to (will perform go to with the actions set in pos, for, spe)
+    ATR = "ATR"  # atr : auto-release (emergency slow move)
+    ADR = "ADR"  # adr : auto-release direction (open(1) or close(0) during auto-release)
+    FOR = "FOR"  # for : force (0-255)
+    SPE = "SPE"  # spe : speed (0-255)
+    POS = "POS"  # pos : position (0-255), 0 = open
+    # READ VARIABLES
+    STA = "STA"  # status (0 = is reset, 1 = activating, 3 = active)
+    PRE = "PRE"  # position request (echo of last commanded position)
+    OBJ = "OBJ"  # object detection (0 = moving, 1 = outer grip, 2 = inner grip, 3 = no object at rest)
+    FLT = "FLT"  # fault (0=ok, see manual for errors if not zero)
+
+    ENCODING = "UTF-8"  # ASCII and UTF-8 both seem to work
+
+    class GripperStatus(enum.Enum):
+        """Gripper status reported by the gripper."""
+        RESET = 0
+        ACTIVATING = 1
+        ACTIVE = 3
+
+    class ObjectStatus(enum.Enum):
+        """Object status reported by the gripper."""
+        MOVING = 0
+        STOPPED_OUTER_OBJECT = 1
+        STOPPED_INNER_OBJECT = 2
+        AT_DEST = 3
+
+    def __init__(self):
+        """Constructor."""
+        self.socket = None
+        self.command_lock = threading.Lock()
+        self._min_position = 0
+        self._max_position = 255
+        self._min_speed = 0
+        self._max_speed = 255
+        self._min_force = 0
+        self._max_force = 255
+
+    def connect(self, hostname: str, port: int, socket_timeout: float = 10.0) -> None:
+        """Connects to a gripper at the given address."""
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        assert self.socket is not None
+        self.socket.connect((hostname, port))
+        self.socket.settimeout(socket_timeout)
+
+    def disconnect(self) -> None:
+        """Closes the connection with the gripper."""
+        if self.socket is not None:
+            self.socket.close()
+
+    def _set_vars(self, var_dict: OrderedDict[str, Union[int, float]]):
+        """Sends the appropriate command via socket to set the value of n variables."""
+        assert self.socket is not None
+        cmd = "SET"
+        for variable, value in var_dict.items():
+            cmd += f" {variable} {str(value)}"
+        cmd += "\n"
+        with self.command_lock:
+            self.socket.sendall(cmd.encode(self.ENCODING))
+            data = self.socket.recv(1024)
+        return self._is_ack(data)
+
+    def _set_var(self, variable: str, value: Union[int, float]):
+        """Sends command to set the value of a variable."""
+        return self._set_vars(OrderedDict([(variable, value)]))
+
+    def _get_var(self, variable: str):
+        """Retrieves the value of a variable from the gripper."""
+        assert self.socket is not None
+        with self.command_lock:
+            cmd = f"GET {variable}\n"
+            self.socket.sendall(cmd.encode(self.ENCODING))
+            data = self.socket.recv(1024)
+        var_name, value_str = data.decode(self.ENCODING).split()
+        if var_name != variable:
+            raise ValueError(f"Unexpected response {data.decode(self.ENCODING)}: does not match '{variable}'")
+        return int(value_str)
+
+    @staticmethod
+    def _is_ack(data: bytes):
+        return data == b"ack"
+
+    def get_current_position(self) -> int:
+        """Returns the current position as returned by the physical hardware."""
+        return self._get_var(self.POS)
+
+    def move(self, position: int, speed: int, force: int) -> Tuple[bool, int]:
+        """Sends commands to start moving towards the given position."""
+        position = int(position)
+        speed = int(speed)
+        force = int(force)
+
+        def clip_val(min_val, val, max_val):
+            return max(min_val, min(val, max_val))
+
+        clip_pos = clip_val(self._min_position, position, self._max_position)
+        clip_spe = clip_val(self._min_speed, speed, self._max_speed)
+        clip_for = clip_val(self._min_force, force, self._max_force)
+
+        var_dict: OrderedDict[str, Union[int, float]] = OrderedDict([
+            (self.POS, clip_pos),
+            (self.SPE, clip_spe),
+            (self.FOR, clip_for),
+            (self.GTO, 1),
+        ])
+        succ = self._set_vars(var_dict)
+        time.sleep(0.008)  # need to wait
+        return succ, clip_pos
+
+
 class Command(enum.Enum):
     STOP = 0
     SERVOL = 1
     SCHEDULE_WAYPOINT = 2
+    GRIPPER_MOVE = 3
 
 
 class RTDEInterpolationController(mp.Process):
@@ -44,6 +164,8 @@ class RTDEInterpolationController(mp.Process):
             verbose=False,
             receive_keys=None,
             get_max_k=128,
+            use_gripper=True,
+            gripper_port=63352,
             ):
         """
         frequency: CB2=125, UR3e=500
@@ -56,6 +178,8 @@ class RTDEInterpolationController(mp.Process):
         payload_cog: 3d position, center of gravity
         soft_real_time: enables round-robin scheduling and real-time priority
             requires running scripts/rtprio_setup.sh before hand.
+        use_gripper: whether to use gripper
+        gripper_port: gripper communication port
 
         """
         # verify
@@ -92,13 +216,16 @@ class RTDEInterpolationController(mp.Process):
         self.joints_init_speed = joints_init_speed
         self.soft_real_time = soft_real_time
         self.verbose = verbose
+        self.use_gripper = use_gripper  # 现在总是可用，因为我们集成了RobotiqGripper类
+        self.gripper_port = gripper_port
 
         # build input queue
         example = {
             'cmd': Command.SERVOL.value,
             'target_pose': np.zeros((6,), dtype=np.float64),
             'duration': 0.0,
-            'target_time': 0.0
+            'target_time': 0.0,
+            'gripper_pos': 0.0
         }
         input_queue = SharedMemoryQueue.create_from_examples(
             shm_manager=shm_manager,
@@ -124,6 +251,12 @@ class RTDEInterpolationController(mp.Process):
         for key in receive_keys:
             example[key] = np.array(getattr(rtde_r, 'get'+key)())
         example['robot_receive_timestamp'] = time.time()
+        
+        # Add gripper state to examples
+        if self.use_gripper:
+            example['gripper_position'] = np.array([0.0])  # gripper position [0-1]
+            example['gripper_force'] = np.array([0.0])     # gripper force
+            example['gripper_speed'] = np.array([0.0])     # gripper speed
         ring_buffer = SharedMemoryRingBuffer.create_from_examples(
             shm_manager=shm_manager,
             examples=example,
@@ -197,7 +330,31 @@ class RTDEInterpolationController(mp.Process):
         message = {
             'cmd': Command.SCHEDULE_WAYPOINT.value,
             'target_pose': pose,
-            'target_time': target_time
+            'target_time': target_time,
+            'gripper_pos': 0.0
+        }
+        self.input_queue.put(message)
+    
+    def command_gripper(self, gripper_pos, speed=255, force=100):
+        """Command gripper to move to specified position
+        
+        Args:
+            gripper_pos: gripper position [0-1], 0=fully open, 1=fully closed
+            speed: gripper speed [0-255]
+            force: gripper force [0-255]
+        """
+        if not self.use_gripper:
+            return
+            
+        assert 0 <= gripper_pos <= 1, "Gripper position must be between 0 and 1"
+        message = {
+            'cmd': Command.GRIPPER_MOVE.value,
+            'target_pose': np.zeros(6),
+            'gripper_pos': gripper_pos,
+            'gripper_speed': speed,
+            'gripper_force': force,
+            'target_time': 0.0,
+            'duration': 0.0
         }
         self.input_queue.put(message)
 
@@ -222,6 +379,49 @@ class RTDEInterpolationController(mp.Process):
         robot_ip = self.robot_ip
         rtde_c = RTDEControlInterface(hostname=robot_ip)
         rtde_r = RTDEReceiveInterface(hostname=robot_ip)
+        
+        # Initialize gripper connection
+        gripper = None
+        if self.use_gripper:
+            try:
+                gripper = RobotiqGripper()
+                gripper.connect(hostname=robot_ip, port=self.gripper_port)
+                if self.verbose:
+                    print(f"[RTDEPositionalController] Gripper connected on port {self.gripper_port}")
+            except Exception as e:
+                print(f"Warning: Failed to connect gripper: {e}")
+                self.use_gripper = False
+                gripper = None
+
+        def get_gripper_state():
+            """Helper function to get gripper state"""
+            if gripper is not None:
+                try:
+                    import time
+                    time.sleep(0.001)  # Small delay to avoid too frequent queries
+                    pos = gripper.get_current_position()
+                    # Map 0-255 to 0-1
+                    normalized_pos = pos / 255.0 if pos is not None else 0.0
+                    # Can add more state information
+                    return {
+                        'gripper_position': np.array([normalized_pos]),
+                        'gripper_force': np.array([0.0]),
+                        'gripper_speed': np.array([0.0])
+                    }
+                except Exception as e:
+                    if self.verbose:
+                        print(f"Warning: Failed to get gripper state: {e}")
+                    return {
+                        'gripper_position': np.array([0.0]),
+                        'gripper_force': np.array([0.0]),
+                        'gripper_speed': np.array([0.0])
+                    }
+            else:
+                return {
+                    'gripper_position': np.array([0.0]),
+                    'gripper_force': np.array([0.0]),
+                    'gripper_speed': np.array([0.0])
+                }
 
         try:
             if self.verbose:
@@ -276,6 +476,12 @@ class RTDEInterpolationController(mp.Process):
                 for key in self.receive_keys:
                     state[key] = np.array(getattr(rtde_r, 'get'+key)())
                 state['robot_receive_timestamp'] = time.time()
+                
+                # Add gripper state
+                if self.use_gripper:
+                    gripper_state = get_gripper_state()
+                    state.update(gripper_state)
+                
                 self.ring_buffer.put(state)
 
                 # fetch command from queue
@@ -331,6 +537,18 @@ class RTDEInterpolationController(mp.Process):
                             last_waypoint_time=last_waypoint_time
                         )
                         last_waypoint_time = target_time
+                    elif cmd == Command.GRIPPER_MOVE.value:
+                        if gripper is not None:
+                            try:
+                                gripper_pos = int(float(command['gripper_pos']) * 255)  # 转换到0-255范围并确保为int
+                                gripper_speed = int(command.get('gripper_speed', 255))
+                                gripper_force = int(command.get('gripper_force', 100))
+                                gripper.move(gripper_pos, gripper_speed, gripper_force)
+                                if self.verbose:
+                                    print(f"[RTDEPositionalController] Gripper move to {gripper_pos}/255")
+                            except Exception as e:
+                                if self.verbose:
+                                    print(f"Warning: Gripper move failed: {e}")
                     else:
                         keep_running = False
                         break

@@ -24,6 +24,10 @@ DEFAULT_OBS_KEY_MAP = {
     'ActualTCPSpeed': 'robot_eef_pose_vel',
     'ActualQ': 'robot_joint',
     'ActualQd': 'robot_joint_vel',
+    # gripper
+    'gripper_position': 'gripper_position',
+    'gripper_force': 'gripper_force',
+    'gripper_speed': 'gripper_speed',
     # timestamps
     'step_idx': 'step_idx',
     'timestamp': 'timestamp'
@@ -49,6 +53,8 @@ class RealEnv:
             # robot
             tcp_offset=0.13,
             init_joints=False,
+            use_gripper=True,
+            gripper_port=63352,
             # video capture params
             video_capture_fps=30,
             video_capture_resolution=(1280,720),
@@ -161,8 +167,8 @@ class RealEnv:
             frequency=125, # UR5 CB3 RTDE
             lookahead_time=0.1,
             gain=300,
-            max_pos_speed=max_pos_speed*cube_diag,
-            max_rot_speed=max_rot_speed*cube_diag,
+            max_pos_speed=float(max_pos_speed*cube_diag),
+            max_rot_speed=float(max_rot_speed*cube_diag),
             launch_timeout=3,
             tcp_offset_pose=[0,0,tcp_offset,0,0,0],
             payload_mass=None,
@@ -172,7 +178,9 @@ class RealEnv:
             soft_real_time=False,
             verbose=False,
             receive_keys=None,
-            get_max_k=max_obs_buffer_size
+            get_max_k=max_obs_buffer_size,
+            use_gripper=use_gripper,
+            gripper_port=gripper_port
             )
         self.realsense = realsense
         self.robot = robot
@@ -348,6 +356,16 @@ class RealEnv:
     
     def get_robot_state(self):
         return self.robot.get_state()
+    
+    def command_gripper(self, gripper_pos, speed=255, force=100):
+        """Command gripper to move to specified position
+        
+        Args:
+            gripper_pos: Gripper position [0-1], 0=fully open, 1=fully closed
+            speed: Gripper speed [0-255]
+            force: Gripper force [0-255]
+        """
+        self.robot.command_gripper(gripper_pos, speed, force)
 
     # recording API
     def start_episode(self, start_time=None):
