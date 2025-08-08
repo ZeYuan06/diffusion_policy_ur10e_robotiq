@@ -137,6 +137,7 @@ class Command(enum.Enum):
     SERVOL = 1
     SCHEDULE_WAYPOINT = 2
     GRIPPER_MOVE = 3
+    SCHEDULE_JOINT_WAYPOINT = 4
 
 
 class RTDEInterpolationController(mp.Process):
@@ -223,6 +224,7 @@ class RTDEInterpolationController(mp.Process):
         example = {
             'cmd': Command.SERVOL.value,
             'target_pose': np.zeros((6,), dtype=np.float64),
+            'target_joints': np.zeros((6,), dtype=np.float64),
             'duration': 0.0,
             'target_time': 0.0,
             'gripper_pos': 0.0, 
@@ -342,6 +344,29 @@ class RTDEInterpolationController(mp.Process):
             'target_pose': pose,
             'target_time': target_time,
             'duration': 0.1, 
+            'gripper_pos': 0.0,
+            'gripper_speed': 100.0,
+            'gripper_force': 50.0,
+        }
+        self.input_queue.put(message)
+
+    def schedule_joint_waypoint(self, joints, target_time):
+        """
+        Schedule joint waypoint for execution
+        
+        Args:
+            joints: 6D joint angles in radians
+            target_time: absolute time in seconds
+        """
+        assert self.is_alive()
+        joints = np.array(joints)
+        assert joints.shape == (6,)
+
+        message = {
+            'cmd': Command.SCHEDULE_JOINT_WAYPOINT.value,
+            'target_joints': joints,
+            'target_time': target_time,
+            'duration': 0.1,
             'gripper_pos': 0.0,
             'gripper_speed': 100.0,
             'gripper_force': 50.0,
@@ -550,6 +575,26 @@ class RTDEInterpolationController(mp.Process):
                             last_waypoint_time=last_waypoint_time
                         )
                         last_waypoint_time = target_time
+                    elif cmd == Command.SCHEDULE_JOINT_WAYPOINT.value:
+                        target_joints = command['target_joints']
+                        target_time = float(command['target_time'])
+                        # translate global time to monotonic time
+                        target_time = time.monotonic() - time.time() + target_time
+                        
+                        # Execute joint movement using moveJ
+                        # For joint movements, we use moveJ which is more direct
+                        if self.verbose:
+                            print(f"[RTDEPositionalController] Moving to joint target: {target_joints} at time: {target_time}")
+                        
+                        # Schedule the joint movement
+                        # Note: moveJ is blocking, so we need to be careful about timing
+                        try:
+                            rtde_c.moveJ(target_joints, 1.4, 1.05)  # speed=1.4 rad/s, acceleration=1.05 rad/s^2
+                            if self.verbose:
+                                print(f"[RTDEPositionalController] Joint movement completed")
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"[RTDEPositionalController] Joint movement failed: {e}")
                     elif cmd == Command.GRIPPER_MOVE.value:
                         if gripper is not None:
                             try:

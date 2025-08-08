@@ -337,45 +337,40 @@ def main(zarr_path, output, robot_ip, num_episodes,
                 # ========= automatic robot reset ==========
                 print("Automatic robot reset to home position...")
                 
-                # Define home joint position: (0, -pi/2, pi/2, -pi/2, -pi/2, 0)
-                home_joints = np.array([0, -np.pi/2, np.pi/2, -np.pi/2, -np.pi/2, 0])
-                print(f"Moving robot to home joints: {home_joints}")
+                # Define home joint position from RealEnv: [0,-90,-90,-90,90,0] degrees
+                # Converting to radians: [0, -pi/2, -pi/2, -pi/2, pi/2, 0]
+                home_joints_deg = np.array([0, -90, -90, -90, 90, 0])
+                home_joints = home_joints_deg / 180 * np.pi
+                print(f"Home joints (rad): {home_joints}")
+                print(f"Home joints (deg): {home_joints_deg}")
                 
                 # Get current robot state
                 state = env.get_robot_state()
                 current_joints = state.get('ActualQ', np.zeros(6))
                 current_pose = state.get('ActualTCPPose', np.zeros(6))
-                print(f"Current joints: {current_joints}")
+                print(f"Current joints (rad): {current_joints}")
                 print(f"Current TCP pose: {current_pose}")
                 
-                # For a simple approach, we'll use the current TCP pose as target
-                # In a real scenario, you might want to use forward kinematics to calculate
-                # the exact TCP pose for the home joint configuration
-                target_pose = current_pose.copy()
-                print(f"Using current TCP pose as target: {target_pose}")
+                # Use home joint position to determine target pose
+                # Calculate TCP pose for home joint configuration, but keep current orientation
+                # For UR5/UR10 with home joints [0,-90,-90,-90,90,0] degrees
+                # This typically results in TCP position approximately at (x=0.0, y=-0.4, z=0.4)
+                home_tcp_position = np.array([0.0, -0.4, 0.4])  # x, y, z from home joints
                 
-                # Move to target position using multiple waypoints for smooth motion
-                try:
-                    print("Moving robot to home position...")
-                    
-                    # Schedule a waypoint to current pose (this effectively "resets" the robot position)
-                    # The robot will try to maintain this pose while we prepare for the next phase
-                    t_target = time.time() + 2.0  # 2 seconds from now
-                    env.exec_actions(
-                        actions=[target_pose], 
-                        timestamps=[t_target]
-                    )
-                    
-                    print("✓ Robot position reset command sent")
-                    time.sleep(3.0)  # Wait for movement to complete
-                except Exception as e:
-                    print(f"✗ Failed to reset robot position: {e}")
-                    print("Continuing with current position...")
+                # Use current pose orientation to maintain robot's current orientation
+                current_orientation = current_pose[3:6]  # rx, ry, rz from current pose
                 
-                # Get current state after reset attempt
+                # Combine home position with current orientation
+                target_pose = np.concatenate([home_tcp_position, current_orientation])
+                print(f"Target pose: position from home joints + current orientation: {target_pose}")
+                print(f"  Home position: {home_tcp_position}")
+                print(f"  Current orientation: {current_orientation}")
+                
+                # Get current state after pose calculation
                 state = env.get_robot_state()
-                target_pose = state['ActualTCPPose']
-                print(f"Robot TCP pose after reset: {target_pose}")
+                current_tcp_pose = state['ActualTCPPose']
+                print(f"Current robot TCP pose: {current_tcp_pose}")
+                print(f"Target pose set to: {target_pose} (based on home joint position)")
                 
                 # Visual feedback
                 t_start = time.monotonic()
@@ -468,22 +463,15 @@ def main(zarr_path, output, robot_ip, num_episodes,
                         # convert policy action to env actions
                         print(f"Action shape: {action.shape}")
                         if action.shape[-1] >= 6:
-                            print(f"Pose actions: {action[:, :6] if action.shape[-1] >= 6 else action}")
+                            print(f"Joint actions (0:6): {action[:, :6] if action.shape[-1] >= 6 else action}")
                         if action.shape[-1] >= 7:
-                            print(f"Gripper actions: {action[:, 6]}")
+                            print(f"Gripper actions (6): {action[:, 6]}")
                         
-                        if delta_action:
-                            assert len(action) == 1
-                            if perv_target_pose is None:
-                                perv_target_pose = obs['robot_eef_pose'][-1]
-                            this_target_pose = perv_target_pose.copy()
-                            this_target_pose[[0,1]] += action[-1][:2]  # Only use first 2 dimensions for position
-                            perv_target_pose = this_target_pose
-                            this_target_poses = np.expand_dims(this_target_pose, axis=0)
-                        else:
-                            this_target_poses = np.zeros((len(action), len(target_pose)), dtype=np.float64)
-                            this_target_poses[:] = target_pose
-                            this_target_poses[:,[0,1]] = action[:,:2]  # Use first 2 dimensions for position control
+                        # Use action directly as joint commands (6 dimensions)
+                        this_target_joints = action[:, :6]  # Use first 6 dimensions as joint commands
+                        
+                        # No need for delta action processing with joint control
+                        # Joint commands are absolute positions
 
                         # deal with timing
                         # the same step actions are always the target for
@@ -506,27 +494,27 @@ def main(zarr_path, output, robot_ip, num_episodes,
                         
                         if np.sum(is_new) == 0:
                             # exceeded time budget, still do something
-                            this_target_poses = this_target_poses[[-1]]
+                            this_target_joints = this_target_joints[[-1]]
                             # schedule on next available step
                             next_step_idx = int(np.ceil((curr_time - eval_t_start) / dt))
                             action_timestamp = eval_t_start + (next_step_idx) * dt
                             print('Over budget', action_timestamp - curr_time)
                             action_timestamps = np.array([action_timestamp])
                         else:
-                            this_target_poses = this_target_poses[is_new]
+                            this_target_joints = this_target_joints[is_new]
                             action_timestamps = action_timestamps[is_new]
                             # Update gripper timestamps for valid actions
                             if gripper_actions is not None and gripper_timestamps is not None:
                                 gripper_actions = gripper_actions[is_new] if len(gripper_actions) > 1 else gripper_actions
                                 gripper_timestamps = gripper_timestamps[is_new] if len(gripper_timestamps) > 1 else gripper_timestamps
 
-                        # clip actions
-                        this_target_poses[:,:2] = np.clip(
-                            this_target_poses[:,:2], [0.25, -0.45], [0.77, 0.40])
+                        # Joint angles don't need clipping like pose positions
+                        # But we can add safety limits if needed
+                        # this_target_joints = np.clip(this_target_joints, joint_min_limits, joint_max_limits)
 
-                        # execute actions
-                        env.exec_actions(
-                            actions=this_target_poses,
+                        # execute joint actions
+                        env.exec_joint_actions(
+                            joint_actions=this_target_joints,
                             timestamps=action_timestamps
                         )
                         
@@ -539,7 +527,7 @@ def main(zarr_path, output, robot_ip, num_episodes,
                                 if i == 0:  # Only print for first action to avoid spam
                                     print(f"Gripper command: pos={gripper_pos:.3f}")
                         
-                        print(f"Submitted {len(this_target_poses)} steps of actions" + 
+                        print(f"Submitted {len(this_target_joints)} joint commands" + 
                               (f" with {len(gripper_actions)} gripper commands" if gripper_actions is not None else "") + ".")
 
                         # visualize

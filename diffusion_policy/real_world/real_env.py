@@ -337,6 +337,13 @@ class RealEnv:
 
         # schedule waypoints
         for i in range(len(new_actions)):
+            # Print action to be executed and wait for user confirmation
+            print(f"Action {i+1}/{len(new_actions)}: {new_actions[i]}")
+            print("Press 'y' to execute this action or any other key to skip:")
+            user_input = input().strip().lower()
+            if user_input != 'y':
+                print(f"Skipping action {i+1}")
+                continue
             self.robot.schedule_waypoint(
                 pose=new_actions[i],
                 target_time=new_timestamps[i]
@@ -346,6 +353,60 @@ class RealEnv:
         if self.action_accumulator is not None:
             self.action_accumulator.put(
                 new_actions,
+                new_timestamps
+            )
+        if self.stage_accumulator is not None:
+            self.stage_accumulator.put(
+                new_stages,
+                new_timestamps
+            )
+    
+    def exec_joint_actions(self, 
+            joint_actions: np.ndarray, 
+            timestamps: np.ndarray, 
+            stages: Optional[np.ndarray]=None):
+        """Execute joint angle actions
+        
+        Args:
+            joint_actions: Joint angles in radians, shape (N, 6)
+            timestamps: Target execution timestamps, shape (N,)
+            stages: Optional stage markers, shape (N,)
+        """
+        assert self.is_ready
+        if not isinstance(joint_actions, np.ndarray):
+            joint_actions = np.array(joint_actions)
+        if not isinstance(timestamps, np.ndarray):
+            timestamps = np.array(timestamps)
+        if stages is None:
+            stages = np.zeros_like(timestamps, dtype=np.int64)
+        elif not isinstance(stages, np.ndarray):
+            stages = np.array(stages, dtype=np.int64)
+
+        # filter actions based on time
+        receive_time = time.time()
+        is_new = timestamps > receive_time
+        new_joint_actions = joint_actions[is_new]
+        new_timestamps = timestamps[is_new]
+        new_stages = stages[is_new]
+
+        # schedule joint waypoints
+        for i in range(len(new_joint_actions)):
+            # Print action to be executed and wait for user confirmation
+            print(f"Action {i+1}/{len(new_joint_actions)}: {new_joint_actions[i]}")
+            print("Press 'y' to execute this action or any other key to skip:")
+            user_input = input().strip().lower()
+            if user_input != 'y':
+                print(f"Skipping action {i+1}")
+                continue
+            self.robot.schedule_joint_waypoint(
+                joints=new_joint_actions[i],
+                target_time=new_timestamps[i]
+            )
+        
+        # record actions
+        if self.action_accumulator is not None:
+            self.action_accumulator.put(
+                new_joint_actions,
                 new_timestamps
             )
         if self.stage_accumulator is not None:
@@ -365,6 +426,13 @@ class RealEnv:
             speed: Gripper speed [0-255]
             force: Gripper force [0-255]
         """
+        # Print action to be executed and wait for user confirmation
+        print(f"Action: {gripper_pos:.3f}, speed: {speed}, force: {force}")
+        print("Press 'y' to execute this action or any other key to skip:")
+        user_input = input().strip().lower()
+        if user_input != 'y':
+            print(f"Skipping action")
+            return
         self.robot.command_gripper(gripper_pos, speed, force)
     
     def exec_gripper_action(self, gripper_pos, timestamp):

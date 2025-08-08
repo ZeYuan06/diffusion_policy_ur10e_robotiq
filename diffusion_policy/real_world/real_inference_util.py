@@ -10,31 +10,6 @@ def get_real_obs_dict(
     obs_dict_np = dict()
     obs_shape_meta = shape_meta['obs']
     
-    # Add check code to print provided data key information
-    print("=== Observation Data Key Information ===")
-    print(f"Required observation keys from config: {list(obs_shape_meta.keys())}")
-    print(f"Actual observation keys from environment: {list(env_obs.keys())}")
-    missing_keys = set(obs_shape_meta.keys()) - set(env_obs.keys())
-    extra_keys = set(env_obs.keys()) - set(obs_shape_meta.keys())
-    if missing_keys:
-        print(f"Missing observation keys: {list(missing_keys)}")
-    if extra_keys:
-        print(f"Extra observation keys: {list(extra_keys)}")
-    
-    # Print shapes of actual observation data
-    print("\n=== Actual Observation Data Shapes ===")
-    for key, data in env_obs.items():
-        print(f"  {key}: shape={data.shape}, dtype={data.dtype}")
-    print("======================================")
-    
-    # Print expected shapes from config
-    print("\n=== Expected Observation Data Shapes (from config) ===")
-    for key, attr in obs_shape_meta.items():
-        shape = attr.get('shape', 'unknown')
-        obs_type = attr.get('type', 'low_dim')
-        print(f"  {key}: expected_shape={shape}, type={obs_type}")
-    print("========================================")
-    
     for key, attr in obs_shape_meta.items():
         type = attr.get('type', 'low_dim')
         shape = attr.get('shape')
