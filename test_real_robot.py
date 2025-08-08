@@ -445,10 +445,10 @@ def main(zarr_path, output, robot_ip, num_episodes,
             while True:
                 # ========= automatic robot reset ==========
                 print("Automatic robot reset to home position...")
-                
-                # Define home joint position from RealEnv: [0,-90,-90,-90,90,0] degrees
-                # Converting to radians: [0, -pi/2, -pi/2, -pi/2, pi/2, 0]
-                home_joints_deg = np.array([0, -90, -90, -90, 90, 0])
+
+                # Define home joint position from RealEnv: [0,-90,90,-90,-90,0] degrees
+                # Converting to radians: [0, -pi/2, pi/2, -pi/2, -pi/2, 0]
+                home_joints_deg = np.array([0, -90, 90, -90, -90, 0])
                 home_joints = home_joints_deg / 180 * np.pi
                 print(f"Home joints (rad): {home_joints}")
                 print(f"Home joints (deg): {home_joints_deg}")
@@ -506,6 +506,7 @@ def main(zarr_path, output, robot_ip, num_episodes,
                 while True:
                     # calculate timing
                     t_cycle_end = t_start + (iter_idx + 1) * dt
+                    print(f"Cycle end time: {t_cycle_end:.2f} (iter {iter_idx})")
                     
                     # pump obs for visualization
                     obs = env.get_obs()

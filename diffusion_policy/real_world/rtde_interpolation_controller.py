@@ -153,8 +153,8 @@ class RTDEInterpolationController(mp.Process):
             frequency=125, 
             lookahead_time=0.1, 
             gain=300,
-            max_pos_speed=0.25, # 5% of max speed
-            max_rot_speed=0.16, # 5% of max speed
+            max_pos_speed=1,
+            max_rot_speed=1,
             launch_timeout=3,
             tcp_offset_pose=None,
             payload_mass=None,
