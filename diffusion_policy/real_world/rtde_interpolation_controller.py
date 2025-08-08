@@ -506,10 +506,16 @@ class RTDEInterpolationController(mp.Process):
 
                 # Use joint control mode
                 joint_command = joint_interp(t_now)
-                vel = [1.05] * 6  # Joint velocities for each joint
-                acc = [1.4] * 6   # Joint accelerations for each joint
-                # Use servoJ for joint control
-                assert rtde_c.servoJ(joint_command, vel, acc, dt)
+                # Convert numpy array to list of floats
+                joint_command_list = joint_command.tolist() if hasattr(joint_command, 'tolist') else list(joint_command)
+                
+                # Use single values for velocity and acceleration (not per-joint)
+                vel = 1.05   # Joint velocity (rad/s)
+                acc = 1.4    # Joint acceleration (rad/s^2)
+                
+                # Use servoJ for joint control with proper parameters
+                # servoJ(q, a, v, t, lookahead_time, gain)
+                assert rtde_c.servoJ(joint_command_list, acc, vel, dt, self.lookahead_time, self.gain)
                 
                 # update robot state
                 state = dict()
