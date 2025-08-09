@@ -408,6 +408,13 @@ class RTDEInterpolationController(mp.Process):
     
     # ========= main loop in process ============
     def run(self):
+        # ===== DEBUG: 添加频率验证开始 =====
+        print(f"[DEBUG] Starting RTDEInterpolationController with frequency: {self.frequency}Hz")
+        print(f"[DEBUG] Expected dt: {1.0/self.frequency*1000:.2f}ms")
+        if self.frequency > 125:
+            print(f"[DEBUG] WARNING: Frequency {self.frequency}Hz may be too high for UR5 CB3 (max 125Hz)")
+        # ===== DEBUG: 添加频率验证结束 =====
+        
         # enable soft real-time
         if self.soft_real_time:
             os.sched_setscheduler(
@@ -503,8 +510,19 @@ class RTDEInterpolationController(mp.Process):
             # ===== DEBUG: 时间记录变量结束 =====
             
             while keep_running:
+                # ===== DEBUG: 记录循环开始时间开始 =====
+                loop_start_time = time.monotonic()
+                # ===== DEBUG: 记录循环开始时间结束 =====
+                
                 # start control iteration
                 t_start = rtde_c.initPeriod()
+                
+                # ===== DEBUG: 记录initPeriod时间开始 =====
+                init_period_time = time.monotonic()
+                init_period_duration = init_period_time - loop_start_time
+                if iter_idx % 200 == 0:  # 每200次打印一次initPeriod时间
+                    print(f"[DEBUG] initPeriod took: {init_period_duration*1000:.2f}ms")
+                # ===== DEBUG: 记录initPeriod时间结束 =====
 
                 # send command to robot
                 t_now = time.monotonic()
@@ -543,6 +561,10 @@ class RTDEInterpolationController(mp.Process):
                 last_command_time = current_command_time
                 # ===== DEBUG: 记录servoJ执行时间结束 =====
                 
+                # ===== DEBUG: 记录状态更新开始 =====
+                state_update_start = time.monotonic()
+                # ===== DEBUG: 记录状态更新结束 =====
+                
                 # update robot state
                 state = dict()
                 for key in self.receive_keys:
@@ -555,13 +577,34 @@ class RTDEInterpolationController(mp.Process):
                     state.update(gripper_state)
                 
                 self.ring_buffer.put(state)
+                
+                # ===== DEBUG: 记录状态更新时间开始 =====
+                state_update_end = time.monotonic()
+                state_update_duration = state_update_end - state_update_start
+                if iter_idx % 200 == 0:  # 每200次打印一次状态更新时间
+                    print(f"[DEBUG] State update took: {state_update_duration*1000:.2f}ms")
+                # ===== DEBUG: 记录状态更新时间结束 =====
 
                 # fetch command from queue
+                # ===== DEBUG: 记录命令队列检查开始 =====
+                queue_check_start = time.monotonic()
+                # ===== DEBUG: 记录命令队列检查结束 =====
+                
                 try:
                     commands = self.input_queue.get_all()
                     n_cmd = len(commands['cmd'])
                 except Empty:
                     n_cmd = 0
+                    commands = None
+                
+                # ===== DEBUG: 记录命令队列状态开始 =====
+                queue_check_end = time.monotonic()
+                queue_check_duration = queue_check_end - queue_check_start
+                if iter_idx % 100 == 0:  # 每100次打印一次队列状态
+                    print(f"[DEBUG] Queue check: {queue_check_duration*1000:.2f}ms, commands: {n_cmd}")
+                    if n_cmd > 0:
+                        print(f"[DEBUG] Processing {n_cmd} commands from queue")
+                # ===== DEBUG: 记录命令队列状态结束 =====
 
                 # execute commands
                 for i in range(n_cmd):
@@ -570,8 +613,11 @@ class RTDEInterpolationController(mp.Process):
                     # ===== DEBUG: 记录命令处理时间结束 =====
                     
                     command = dict()
-                    for key, value in commands.items():
-                        command[key] = value[i]
+                    if commands is not None:  # 确保commands不为None
+                        for key, value in commands.items():
+                            command[key] = value[i]
+                    else:
+                        break  # 如果commands为None，跳出循环
                     cmd = command['cmd']
 
                     if cmd == Command.STOP.value:
@@ -676,13 +722,24 @@ class RTDEInterpolationController(mp.Process):
                     # ===== DEBUG: 记录单个命令总处理时间结束 =====
 
                 # regulate frequency
+                # ===== DEBUG: 检查waitPeriod开始 =====
+                wait_start = time.monotonic()
+                # ===== DEBUG: 检查waitPeriod结束 =====
+                
                 rtde_c.waitPeriod(t_start)
+                
+                # ===== DEBUG: 记录waitPeriod时间开始 =====
+                wait_end = time.monotonic()
+                wait_duration = wait_end - wait_start
+                if wait_duration < 0.005:  # 如果等待时间少于5ms，说明有问题
+                    print(f"[DEBUG] WARNING: waitPeriod too short: {wait_duration*1000:.2f}ms")
+                # ===== DEBUG: 记录waitPeriod时间结束 =====
 
                 # ===== DEBUG: 记录整个循环时间开始 =====
                 loop_end_time = time.monotonic()
                 loop_duration = loop_end_time - current_command_time
-                if self.verbose and iter_idx % 100 == 0:  # 每100次打印一次循环时间统计
-                    print(f"[DEBUG] Control loop {iter_idx}: total={loop_duration*1000:.2f}ms")
+                if iter_idx % 100 == 0:  # 每100次打印一次循环时间统计
+                    print(f"[DEBUG] Control loop {iter_idx}: total={loop_duration*1000:.2f}ms, wait={wait_duration*1000:.2f}ms")
                 # ===== DEBUG: 记录整个循环时间结束 =====
 
                 # first loop successful, ready to receive command
@@ -690,13 +747,30 @@ class RTDEInterpolationController(mp.Process):
                     self.ready_event.set()
                 iter_idx += 1
 
-                if self.verbose:
-                    # ===== DEBUG: 增强频率显示开始 =====
-                    actual_freq = 1/(time.perf_counter() - t_start)
-                    target_freq = self.frequency
-                    freq_ratio = actual_freq / target_freq
-                    print(f"[RTDEPositionalController] Actual frequency {actual_freq:.1f}Hz (target: {target_freq}Hz, ratio: {freq_ratio:.2f})")
-                    # ===== DEBUG: 增强频率显示结束 =====
+                # ===== DEBUG: 修复并增强频率显示开始 =====
+                if iter_idx % 100 == 0:  # 每100次打印一次频率统计
+                    try:
+                        loop_end = time.monotonic()
+                        loop_time = loop_end - loop_start_time
+                        actual_freq = 1.0 / loop_time if loop_time > 0 else 0
+                        target_freq = self.frequency
+                        freq_ratio = actual_freq / target_freq if target_freq > 0 else 0
+                        
+                        print(f"[DEBUG] Frequency analysis:")
+                        print(f"  - Loop time: {loop_time*1000:.2f}ms")
+                        print(f"  - Actual freq: {actual_freq:.1f}Hz")
+                        print(f"  - Target freq: {target_freq:.1f}Hz") 
+                        print(f"  - Frequency ratio: {freq_ratio:.2f}")
+                        print(f"  - Expected dt: {1000.0/target_freq:.2f}ms")
+                        
+                        if freq_ratio > 1.5:
+                            print(f"  - WARNING: Running {freq_ratio:.1f}x faster than expected!")
+                        elif freq_ratio < 0.8:
+                            print(f"  - WARNING: Running {freq_ratio:.1f}x slower than expected!")
+                            
+                    except Exception as e:
+                        print(f"[DEBUG] Error calculating frequency: {e}")
+                # ===== DEBUG: 修复并增强频率显示结束 =====
 
         finally:
             # manditory cleanup
