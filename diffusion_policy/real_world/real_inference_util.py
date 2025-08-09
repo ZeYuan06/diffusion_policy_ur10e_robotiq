@@ -68,7 +68,6 @@ def get_real_obs_dict(
                     agent_pos_list.append(agent_pos)
                 
                 obs_dict_np[key] = np.stack(agent_pos_list)  # (t, 14)
-                print(f"Created agent_pos with shape: {obs_dict_np[key].shape}")
                 
             elif key in env_obs:
                 this_data_in = env_obs[key]

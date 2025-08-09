@@ -216,7 +216,7 @@ class RTDEInterpolationController(mp.Process):
         self.joints_init = joints_init
         self.joints_init_speed = joints_init_speed
         self.soft_real_time = soft_real_time
-        self.verbose = verbose
+        self.verbose = True
         self.use_gripper = use_gripper
         self.gripper_port = gripper_port
 
@@ -513,9 +513,9 @@ class RTDEInterpolationController(mp.Process):
                 current_command_time = time.monotonic()
                 command_interval = current_command_time - last_command_time
                 command_intervals.append(command_interval)
-                if self.verbose and iter_idx % 50 == 0:  # 每50次打印一次统计
-                    avg_interval = np.mean(command_intervals[-50:]) if len(command_intervals) >= 50 else np.mean(command_intervals)
-                    print(f"[DEBUG] Command interval: current={command_interval*1000:.1f}ms, avg={avg_interval*1000:.1f}ms")
+                # if self.verbose and iter_idx % 50 == 0:  # 每50次打印一次统计
+                avg_interval = np.mean(command_intervals[-50:]) if len(command_intervals) >= 50 else np.mean(command_intervals)
+                print(f"[DEBUG] Command interval: current={command_interval*1000:.1f}ms, avg={avg_interval*1000:.1f}ms")
                 # ===== DEBUG: 记录指令发送时间结束 =====
 
                 # Use joint control mode
@@ -538,8 +538,8 @@ class RTDEInterpolationController(mp.Process):
                 # ===== DEBUG: 记录servoJ执行时间开始 =====
                 servo_end_time = time.monotonic()
                 servo_duration = servo_end_time - servo_start_time
-                if self.verbose and iter_idx % 100 == 0:  # 每100次打印一次servoJ执行时间
-                    print(f"[DEBUG] servoJ execution time: {servo_duration*1000:.2f}ms")
+                # if self.verbose and iter_idx % 100 == 0:  # 每100次打印一次servoJ执行时间
+                print(f"[DEBUG] servoJ execution time: {servo_duration*1000:.2f}ms")
                 last_command_time = current_command_time
                 # ===== DEBUG: 记录servoJ执行时间结束 =====
                 
@@ -638,9 +638,9 @@ class RTDEInterpolationController(mp.Process):
                         # ===== DEBUG: 记录关节命令处理完成时间开始 =====
                         joint_cmd_end = time.monotonic()
                         joint_cmd_duration = joint_cmd_end - joint_cmd_start
-                        if self.verbose:
-                            print(f"[DEBUG] Joint command processed in {joint_cmd_duration*1000:.2f}ms, target_time: {target_time:.3f}")
-                            print(f"[RTDEPositionalController] New joint target: {target_joints} at time: {target_time}")
+                        # if self.verbose:
+                        print(f"[DEBUG] Joint command processed in {joint_cmd_duration*1000:.2f}ms, target_time: {target_time:.3f}")
+                        print(f"[RTDEPositionalController] New joint target: {target_joints} at time: {target_time}")
                         # ===== DEBUG: 记录关节命令处理完成时间结束 =====
                     elif cmd == Command.GRIPPER_MOVE.value:
                         # ===== DEBUG: 记录夹爪命令时间开始 =====
@@ -657,9 +657,9 @@ class RTDEInterpolationController(mp.Process):
                                 # ===== DEBUG: 记录夹爪命令完成时间开始 =====
                                 gripper_cmd_end = time.monotonic()
                                 gripper_cmd_duration = gripper_cmd_end - gripper_cmd_start
-                                if self.verbose:
-                                    print(f"[DEBUG] Gripper command processed in {gripper_cmd_duration*1000:.2f}ms")
-                                    print(f"[RTDEPositionalController] Gripper move to {gripper_pos}/255")
+                                # if self.verbose:
+                                print(f"[DEBUG] Gripper command processed in {gripper_cmd_duration*1000:.2f}ms")
+                                print(f"[RTDEPositionalController] Gripper move to {gripper_pos}/255")
                                 # ===== DEBUG: 记录夹爪命令完成时间结束 =====
                             except Exception as e:
                                 if self.verbose:

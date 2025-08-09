@@ -571,7 +571,6 @@ def main(zarr_path, output, robot_ip, num_episodes,
                         print('get_obs')
                         obs = env.get_obs()
                         obs_timestamps = obs['timestamp']
-                        print(f'Obs latency {time.time() - obs_timestamps[-1]}')
 
                         # run inference
                         with torch.no_grad():
@@ -585,14 +584,9 @@ def main(zarr_path, output, robot_ip, num_episodes,
                             result = policy.predict_action(obs_dict)
                             # this action starts from the first obs step
                             action = result['action'][0].detach().to('cpu').numpy()
-                            print('Inference latency:', time.time() - s)
                         
                         # convert policy action to env actions
                         action_info = process_policy_action(action)
-                        print(f"Action shape: {action_info['shape']}")
-                        print(f"Joint actions (0:6): {action_info['joint_actions']}")
-                        if action_info['has_gripper']:
-                            print(f"Gripper actions (6): {action_info['gripper_actions']}")
                         
                         # Handle action timing and filtering
                         timing_info = process_action_timing(
@@ -604,9 +598,6 @@ def main(zarr_path, output, robot_ip, num_episodes,
                         joint_timestamps = timing_info['joint_timestamps']
                         gripper_commands = timing_info['gripper_commands']
                         gripper_timestamps = timing_info['gripper_timestamps']
-                        
-                        if timing_info['over_budget']:
-                            print(f'Over budget: {timing_info["budget_info"]}')
 
                         # Execute joint actions
                         env.exec_joint_actions(
