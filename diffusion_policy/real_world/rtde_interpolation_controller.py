@@ -497,12 +497,26 @@ class RTDEInterpolationController(mp.Process):
             
             iter_idx = 0
             keep_running = True
+            # ===== DEBUG: 时间记录变量开始 =====
+            last_command_time = time.monotonic()
+            command_intervals = []
+            # ===== DEBUG: 时间记录变量结束 =====
+            
             while keep_running:
                 # start control iteration
                 t_start = rtde_c.initPeriod()
 
                 # send command to robot
                 t_now = time.monotonic()
+
+                # ===== DEBUG: 记录指令发送时间开始 =====
+                current_command_time = time.monotonic()
+                command_interval = current_command_time - last_command_time
+                command_intervals.append(command_interval)
+                if self.verbose and iter_idx % 50 == 0:  # 每50次打印一次统计
+                    avg_interval = np.mean(command_intervals[-50:]) if len(command_intervals) >= 50 else np.mean(command_intervals)
+                    print(f"[DEBUG] Command interval: current={command_interval*1000:.1f}ms, avg={avg_interval*1000:.1f}ms")
+                # ===== DEBUG: 记录指令发送时间结束 =====
 
                 # Use joint control mode
                 joint_command = joint_interp(t_now)
@@ -513,9 +527,21 @@ class RTDEInterpolationController(mp.Process):
                 vel = 1   # Joint velocity (rad/s)
                 acc = 1    # Joint acceleration (rad/s^2)
                 
+                # ===== DEBUG: 记录servoJ调用时间开始 =====
+                servo_start_time = time.monotonic()
+                # ===== DEBUG: 记录servoJ调用时间结束 =====
+                
                 # Use servoJ for joint control with proper parameters
                 # servoJ(q, a, v, t, lookahead_time, gain)
                 assert rtde_c.servoJ(joint_command_list, acc, vel, dt, self.lookahead_time, self.gain)
+                
+                # ===== DEBUG: 记录servoJ执行时间开始 =====
+                servo_end_time = time.monotonic()
+                servo_duration = servo_end_time - servo_start_time
+                if self.verbose and iter_idx % 100 == 0:  # 每100次打印一次servoJ执行时间
+                    print(f"[DEBUG] servoJ execution time: {servo_duration*1000:.2f}ms")
+                last_command_time = current_command_time
+                # ===== DEBUG: 记录servoJ执行时间结束 =====
                 
                 # update robot state
                 state = dict()
@@ -539,6 +565,10 @@ class RTDEInterpolationController(mp.Process):
 
                 # execute commands
                 for i in range(n_cmd):
+                    # ===== DEBUG: 记录命令处理时间开始 =====
+                    cmd_process_start = time.monotonic()
+                    # ===== DEBUG: 记录命令处理时间结束 =====
+                    
                     command = dict()
                     for key, value in commands.items():
                         command[key] = value[i]
@@ -584,6 +614,10 @@ class RTDEInterpolationController(mp.Process):
                         )
                         last_waypoint_time = target_time
                     elif cmd == Command.SCHEDULE_JOINT_WAYPOINT.value:
+                        # ===== DEBUG: 记录关节命令处理时间开始 =====
+                        joint_cmd_start = time.monotonic()
+                        # ===== DEBUG: 记录关节命令处理时间结束 =====
+                        
                         target_joints = command['target_joints']
                         target_time = float(command['target_time'])
                         # translate global time to monotonic time
@@ -600,17 +634,33 @@ class RTDEInterpolationController(mp.Process):
                             last_waypoint_time=last_waypoint_time
                         )
                         last_waypoint_time = target_time
+                        
+                        # ===== DEBUG: 记录关节命令处理完成时间开始 =====
+                        joint_cmd_end = time.monotonic()
+                        joint_cmd_duration = joint_cmd_end - joint_cmd_start
                         if self.verbose:
+                            print(f"[DEBUG] Joint command processed in {joint_cmd_duration*1000:.2f}ms, target_time: {target_time:.3f}")
                             print(f"[RTDEPositionalController] New joint target: {target_joints} at time: {target_time}")
+                        # ===== DEBUG: 记录关节命令处理完成时间结束 =====
                     elif cmd == Command.GRIPPER_MOVE.value:
+                        # ===== DEBUG: 记录夹爪命令时间开始 =====
+                        gripper_cmd_start = time.monotonic()
+                        # ===== DEBUG: 记录夹爪命令时间结束 =====
+                        
                         if gripper is not None:
                             try:
                                 gripper_pos = int(float(command['gripper_pos']) * 255)  # 转换到0-255范围并确保为int
                                 gripper_speed = int(command.get('gripper_speed', 255))
                                 gripper_force = int(command.get('gripper_force', 100))
                                 gripper.move(gripper_pos, gripper_speed, gripper_force)
+                                
+                                # ===== DEBUG: 记录夹爪命令完成时间开始 =====
+                                gripper_cmd_end = time.monotonic()
+                                gripper_cmd_duration = gripper_cmd_end - gripper_cmd_start
                                 if self.verbose:
+                                    print(f"[DEBUG] Gripper command processed in {gripper_cmd_duration*1000:.2f}ms")
                                     print(f"[RTDEPositionalController] Gripper move to {gripper_pos}/255")
+                                # ===== DEBUG: 记录夹爪命令完成时间结束 =====
                             except Exception as e:
                                 if self.verbose:
                                     print(f"Warning: Gripper move failed: {e}")
@@ -618,8 +668,22 @@ class RTDEInterpolationController(mp.Process):
                         keep_running = False
                         break
 
+                    # ===== DEBUG: 记录单个命令总处理时间开始 =====
+                    cmd_process_end = time.monotonic()
+                    cmd_process_duration = cmd_process_end - cmd_process_start
+                    if self.verbose and cmd_process_duration > 0.001:  # 只记录超过1ms的命令处理
+                        print(f"[DEBUG] Command {cmd} processed in {cmd_process_duration*1000:.2f}ms")
+                    # ===== DEBUG: 记录单个命令总处理时间结束 =====
+
                 # regulate frequency
                 rtde_c.waitPeriod(t_start)
+
+                # ===== DEBUG: 记录整个循环时间开始 =====
+                loop_end_time = time.monotonic()
+                loop_duration = loop_end_time - current_command_time
+                if self.verbose and iter_idx % 100 == 0:  # 每100次打印一次循环时间统计
+                    print(f"[DEBUG] Control loop {iter_idx}: total={loop_duration*1000:.2f}ms")
+                # ===== DEBUG: 记录整个循环时间结束 =====
 
                 # first loop successful, ready to receive command
                 if iter_idx == 0:
@@ -627,7 +691,12 @@ class RTDEInterpolationController(mp.Process):
                 iter_idx += 1
 
                 if self.verbose:
-                    print(f"[RTDEPositionalController] Actual frequency {1/(time.perf_counter() - t_start)}")
+                    # ===== DEBUG: 增强频率显示开始 =====
+                    actual_freq = 1/(time.perf_counter() - t_start)
+                    target_freq = self.frequency
+                    freq_ratio = actual_freq / target_freq
+                    print(f"[RTDEPositionalController] Actual frequency {actual_freq:.1f}Hz (target: {target_freq}Hz, ratio: {freq_ratio:.2f})")
+                    # ===== DEBUG: 增强频率显示结束 =====
 
         finally:
             # manditory cleanup
