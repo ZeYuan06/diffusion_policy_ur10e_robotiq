@@ -216,7 +216,7 @@ class RTDEInterpolationController(mp.Process):
         self.joints_init = joints_init
         self.joints_init_speed = joints_init_speed
         self.soft_real_time = soft_real_time
-        self.verbose = True
+        self.verbose = verbose
         self.use_gripper = use_gripper
         self.gripper_port = gripper_port
 
@@ -408,9 +408,6 @@ class RTDEInterpolationController(mp.Process):
     
     # ========= main loop in process ============
     def run(self):
-        if self.verbose:
-            print(f"[RTDEPositionalController] Starting with frequency: {self.frequency}Hz")
-        
         # enable soft real-time
         if self.soft_real_time:
             os.sched_setscheduler(
@@ -427,8 +424,6 @@ class RTDEInterpolationController(mp.Process):
             try:
                 gripper = RobotiqGripper()
                 gripper.connect(hostname=robot_ip, port=self.gripper_port)
-                if self.verbose:
-                    print(f"[RTDEPositionalController] Gripper connected on port {self.gripper_port}")
             except Exception as e:
                 print(f"Warning: Failed to connect gripper: {e}")
                 self.use_gripper = False
@@ -448,8 +443,6 @@ class RTDEInterpolationController(mp.Process):
                         'gripper_speed': np.array([0.0])
                     }
                 except Exception as e:
-                    if self.verbose:
-                        print(f"Warning: Failed to get gripper state: {e}")
                     return {
                         'gripper_position': np.array([0.0]),
                         'gripper_force': np.array([0.0]),
@@ -463,9 +456,6 @@ class RTDEInterpolationController(mp.Process):
                 }
 
         try:
-            if self.verbose:
-                print(f"[RTDEPositionalController] Connect to robot: {robot_ip}")
-
             # set parameters
             if self.tcp_offset_pose is not None:
                 rtde_c.setTcp(self.tcp_offset_pose)
@@ -565,9 +555,6 @@ class RTDEInterpolationController(mp.Process):
                             max_rot_speed=self.max_rot_speed
                         )
                         last_waypoint_time = t_insert
-                        if self.verbose:
-                            print("[RTDEPositionalController] New pose target:{} duration:{}s".format(
-                                target_pose, duration))
                     elif cmd == Command.SCHEDULE_WAYPOINT.value:
                         target_pose = command['target_pose']
                         target_time = float(command['target_time'])
@@ -597,9 +584,6 @@ class RTDEInterpolationController(mp.Process):
                             last_waypoint_time=last_waypoint_time
                         )
                         last_waypoint_time = target_time
-                        
-                        if self.verbose:
-                            print(f"[RTDEPositionalController] New joint target: {target_joints} at time: {target_time}")
                     elif cmd == Command.GRIPPER_MOVE.value:
                         if gripper is not None:
                             try:
@@ -607,11 +591,8 @@ class RTDEInterpolationController(mp.Process):
                                 gripper_speed = int(command.get('gripper_speed', 255))
                                 gripper_force = int(command.get('gripper_force', 100))
                                 gripper.move(gripper_pos, gripper_speed, gripper_force)
-                                if self.verbose:
-                                    print(f"[RTDEPositionalController] Gripper move to {gripper_pos}/255")
                             except Exception as e:
-                                if self.verbose:
-                                    print(f"Warning: Gripper move failed: {e}")
+                                pass
                     else:
                         keep_running = False
                         break
@@ -624,10 +605,6 @@ class RTDEInterpolationController(mp.Process):
                     self.ready_event.set()
                 iter_idx += 1
 
-                # Minimal frequency monitoring
-                if self.verbose and iter_idx % 500 == 0:  # 只每500次打印一次
-                    print(f"[RTDEPositionalController] Running at iter: {iter_idx}")
-
         finally:
             # manditory cleanup
             # decelerate
@@ -638,6 +615,3 @@ class RTDEInterpolationController(mp.Process):
             rtde_c.disconnect()
             rtde_r.disconnect()
             self.ready_event.set()
-
-            if self.verbose:
-                print(f"[RTDEPositionalController] Disconnected from robot: {robot_ip}")
