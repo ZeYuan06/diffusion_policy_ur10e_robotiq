@@ -53,6 +53,9 @@ from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 from diffusion_policy.common.cv2_util import get_image_transform
+import json
+import os
+from PIL import Image
 
 
 def process_policy_action(action):
@@ -166,6 +169,184 @@ def execute_gripper_actions(env, gripper_commands, gripper_timestamps):
                 print(f"Gripper command: pos={gripper_pos:.3f}")
 
 
+def debug_policy_inference_and_exit(policy, obs, obs_dict_np, obs_dict, device, output_dir, use_joint_control):
+    """
+    Debug function to record policy observations and actions, then exit
+    
+    Args:
+        policy: Policy model
+        obs: Raw observations from environment
+        obs_dict_np: Numpy observation dictionary
+        obs_dict: Tensor observation dictionary
+        device: PyTorch device
+        output_dir: Output directory for saving debug files
+        use_joint_control: Whether using joint control mode
+    """
+    print("="*50)
+    print("DEBUG MODE: Recording policy input/output and exiting")
+    print("="*50)
+    
+    # Create debug output directory
+    debug_dir = os.path.join(output_dir, 'debug_policy')
+    os.makedirs(debug_dir, exist_ok=True)
+    print(f"Debug files will be saved to: {debug_dir}")
+    
+    # 1. Save raw observations
+    print("Saving raw observations...")
+    obs_save_path = os.path.join(debug_dir, 'raw_observations.json')
+    obs_to_save = {}
+    for key, value in obs.items():
+        if isinstance(value, np.ndarray):
+            obs_to_save[key] = {
+                'shape': list(value.shape),
+                'dtype': str(value.dtype),
+                'min': float(np.min(value)) if value.size > 0 else None,
+                'max': float(np.max(value)) if value.size > 0 else None,
+                'mean': float(np.mean(value)) if value.size > 0 else None
+            }
+            # Save array data for small arrays (non-image data)
+            if value.size < 1000:  # Arbitrary threshold for small arrays
+                obs_to_save[key]['data'] = value.tolist()
+        else:
+            obs_to_save[key] = str(value)
+    
+    with open(obs_save_path, 'w') as f:
+        json.dump(obs_to_save, f, indent=2)
+    print(f"Raw observations saved to: {obs_save_path}")
+    
+    # 2. Save observation images
+    print("Saving observation images...")
+    image_count = 0
+    for key, value in obs.items():
+        if 'camera' in key and isinstance(value, np.ndarray):
+            # Handle multi-timestep observations
+            if len(value.shape) == 4:  # (T, H, W, C)
+                for t in range(value.shape[0]):
+                    img = value[t]
+                    if img.dtype != np.uint8:
+                        img = (img * 255).astype(np.uint8) if img.max() <= 1.0 else img.astype(np.uint8)
+                    
+                    # Convert BGR to RGB if needed
+                    if img.shape[-1] == 3:
+                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    
+                    img_pil = Image.fromarray(img)
+                    img_path = os.path.join(debug_dir, f'{key}_t{t}.png')
+                    img_pil.save(img_path)
+                    image_count += 1
+                    print(f"Saved image: {img_path} (shape: {img.shape})")
+            elif len(value.shape) == 3:  # (H, W, C)
+                img = value
+                if img.dtype != np.uint8:
+                    img = (img * 255).astype(np.uint8) if img.max() <= 1.0 else img.astype(np.uint8)
+                
+                # Convert BGR to RGB if needed
+                if img.shape[-1] == 3:
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                
+                img_pil = Image.fromarray(img)
+                img_path = os.path.join(debug_dir, f'{key}.png')
+                img_pil.save(img_path)
+                image_count += 1
+                print(f"Saved image: {img_path} (shape: {img.shape})")
+    
+    print(f"Total images saved: {image_count}")
+    
+    # 3. Save processed observation dictionary
+    print("Saving processed observations...")
+    obs_dict_save_path = os.path.join(debug_dir, 'processed_observations.json')
+    obs_dict_to_save = {}
+    for key, value in obs_dict_np.items():
+        if isinstance(value, np.ndarray):
+            obs_dict_to_save[key] = {
+                'shape': list(value.shape),
+                'dtype': str(value.dtype),
+                'min': float(np.min(value)) if value.size > 0 else None,
+                'max': float(np.max(value)) if value.size > 0 else None,
+                'mean': float(np.mean(value)) if value.size > 0 else None
+            }
+            # Save small arrays
+            if value.size < 1000:
+                obs_dict_to_save[key]['data'] = value.tolist()
+        else:
+            obs_dict_to_save[key] = str(value)
+    
+    with open(obs_dict_save_path, 'w') as f:
+        json.dump(obs_dict_to_save, f, indent=2)
+    print(f"Processed observations saved to: {obs_dict_save_path}")
+    
+    # 4. Run policy inference and save actions
+    print("Running policy inference...")
+    with torch.no_grad():
+        policy.reset()
+        result = policy.predict_action(obs_dict)
+        action = result['action'][0].detach().to('cpu').numpy()
+    
+    print(f"Policy output action shape: {action.shape}")
+    print(f"Action range: [{np.min(action):.4f}, {np.max(action):.4f}]")
+    
+    # 5. Save action data
+    print("Saving action data...")
+    action_save_path = os.path.join(debug_dir, 'policy_actions.json')
+    action_data = {
+        'action_shape': list(action.shape),
+        'action_dtype': str(action.dtype),
+        'action_min': float(np.min(action)),
+        'action_max': float(np.max(action)),
+        'action_mean': float(np.mean(action)),
+        'action_std': float(np.std(action)),
+        'full_action_data': action.tolist(),
+        'control_mode': 'joint_control' if use_joint_control else 'pose_control'
+    }
+    
+    if action.shape[-1] >= 6:
+        action_data['joint_actions'] = action[:, :6].tolist()
+        action_data['joint_actions_range'] = [float(np.min(action[:, :6])), float(np.max(action[:, :6]))]
+        action_data['joint_actions_mean'] = float(np.mean(action[:, :6]))
+    
+    if action.shape[-1] >= 7:
+        action_data['gripper_actions'] = action[:, 6].tolist()
+        action_data['gripper_actions_range'] = [float(np.min(action[:, 6])), float(np.max(action[:, 6]))]
+        action_data['gripper_actions_mean'] = float(np.mean(action[:, 6]))
+    
+    with open(action_save_path, 'w') as f:
+        json.dump(action_data, f, indent=2)
+    print(f"Action data saved to: {action_save_path}")
+    
+    # 6. Save action as numpy file for easy loading
+    action_np_path = os.path.join(debug_dir, 'policy_actions.npy')
+    np.save(action_np_path, action)
+    print(f"Action numpy array saved to: {action_np_path}")
+    
+    # 7. Print summary
+    print("\n" + "="*50)
+    print("DEBUG SUMMARY")
+    print("="*50)
+    print(f"Debug directory: {debug_dir}")
+    print(f"Raw observations: {obs_save_path}")
+    print(f"Processed observations: {obs_dict_save_path}")
+    print(f"Images saved: {image_count}")
+    print(f"Action data (JSON): {action_save_path}")
+    print(f"Action data (NumPy): {action_np_path}")
+    print(f"Policy action shape: {action.shape}")
+    print(f"Control mode: {'joint_control' if use_joint_control else 'pose_control'}")
+    
+    if action.shape[-1] >= 6:
+        print(f"Joint actions shape: {action[:, :6].shape}")
+        print(f"Joint actions range: [{np.min(action[:, :6]):.4f}, {np.max(action[:, :6]):.4f}]")
+    
+    if action.shape[-1] >= 7:
+        print(f"Gripper actions shape: {action[:, 6].shape}")
+        print(f"Gripper actions range: [{np.min(action[:, 6]):.4f}, {np.max(action[:, 6]):.4f}]")
+    
+    print("="*50)
+    print("DEBUG MODE COMPLETE - EXITING")
+    print("="*50)
+    
+    # Exit the program
+    exit(0)
+
+
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 @click.command()
@@ -182,10 +363,11 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 @click.option('--command_latency', '-cl', default=0.01, type=float, help="Latency between receiving SapceMouse command to executing on Robot in Sec.")
 @click.option('--use_joint_control', '-jc', is_flag=True, default=True, help="Use joint control instead of pose control.")
 @click.option('--auto_reset_home', '-ar', is_flag=True, default=True, help="Automatically reset robot to home position before each episode.")
+@click.option('--debug_mode', '-d', is_flag=True, default=False, help="Enable debug mode: save observations and actions, then exit without robot execution.")
 def main(input, output, robot_ip, match_dataset, match_episode,
     vis_camera_idx, init_joints, 
     steps_per_inference, max_duration,
-    frequency, command_latency, use_joint_control, auto_reset_home):
+    frequency, command_latency, use_joint_control, auto_reset_home, debug_mode):
     # load match_dataset
     match_camera_idx = 0
     episode_first_frame_map = dict()
@@ -318,6 +500,20 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                     else:
                         print("Policy outputs pose control only")
                 del result
+                
+                # ========= DEBUG MODE: Save observations and actions then exit ==========
+                if debug_mode:
+                    print("DEBUG MODE ENABLED - Recording policy data...")
+                    debug_policy_inference_and_exit(
+                        policy=policy,
+                        obs=obs,
+                        obs_dict_np=obs_dict_np,
+                        obs_dict=obs_dict,
+                        device=device,
+                        output_dir=output,
+                        use_joint_control=use_joint_control
+                    )
+                    # This function will exit the program, so code below won't execute
 
             print('Ready!')
             while True:
