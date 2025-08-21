@@ -193,9 +193,9 @@ class StackCubeImageRunner(BaseImageRunner):
                     processed_obs = {}
                     
                     # Extract image from sensor_data
-                    if 'sensor_data' in raw_obs and 'base_camera' in raw_obs['sensor_data']:
+                    if 'sensor_data' in raw_obs and 'render_camera' in raw_obs['sensor_data']:
                         # ManiSkill returns RGB image, handle different dimensions
-                        rgb_image = raw_obs['sensor_data']['base_camera']['rgb']
+                        rgb_image = raw_obs['sensor_data']['render_camera']['rgb']
                         if isinstance(rgb_image, torch.Tensor):
                             # Handle different image dimensions
                             if len(rgb_image.shape) == 4:  # [B, H, W, C]

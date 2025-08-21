@@ -166,8 +166,8 @@ training:
   max_val_steps: null
   num_epochs: 80
   resume: true
-  rollout_every: 4
-  sample_every: 4
+  rollout_every: 8
+  sample_every: 8
   seed: 42
   tqdm_interval_sec: 1.0
   use_ema: true

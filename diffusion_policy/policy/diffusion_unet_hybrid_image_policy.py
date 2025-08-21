@@ -289,43 +289,6 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
         batch_size = nactions.shape[0]
         horizon = nactions.shape[1]
 
-        print(f"The image is {nobs['image']}, whose shape is {nobs['image'].shape}")
-        sample_image = nobs['image'][0, 0]
-        
-        # Save sample image to file
-        try:
-            import numpy as np
-            import os
-            
-            # Ensure the image is on CPU and convert to numpy array
-            sample_image_np = sample_image.detach().cpu().numpy()
-            
-            # Check image dimensions and perform conversion
-            if sample_image_np.shape[0] == 3:  # If it's in CHW format
-                # Convert CHW to HWC (if it's an RGB image)
-                sample_image_np = np.transpose(sample_image_np, (1, 2, 0))
-            
-            # Create save directory
-            save_dir = os.path.join(os.getcwd(), 'debug_images')
-            os.makedirs(save_dir, exist_ok=True)
-            
-            # Use matplotlib to save the image (can directly handle float values in [0,1] range)
-            import matplotlib.pyplot as plt
-            
-            # Save original float image
-            # plt.figure(figsize=(6, 6))
-            plt.imshow(sample_image_np)  # plt automatically handles float values in [0,1] range
-            plt.axis('off')  # Don't display axes
-            save_path = os.path.join(save_dir, 'sample_image_plt.png')
-            plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
-            plt.close()
-            
-            print(f"Image saved using plt: {save_path}")
-        except Exception as e:
-            print(f"保存图像时出错: {e}")
-            
-        exit()
-
         # handle different ways of passing observation
         local_cond = None
         global_cond = None
