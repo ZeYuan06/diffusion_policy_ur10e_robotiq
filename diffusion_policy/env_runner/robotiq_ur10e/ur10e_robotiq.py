@@ -42,6 +42,10 @@ class UR10eRobotiq(BaseAgent):
     )
 
     @property
+    def init_keyframe(self):
+        return self.keyframes['rest']
+
+    @property
     def tcp(self):
         return self.robot.links_map['eef']
     
@@ -164,3 +168,13 @@ class UR10eRobotiq(BaseAgent):
         T[:3, :3] = np.stack([ortho, closing, approaching], axis=1)
         T[:3, 3] = center
         return sapien.Pose(T)
+
+    @property
+    def gripper_qpos(self):
+        """Get the current gripper joint positions."""
+        joint = self.robot.active_joints_map["left_outer_knuckle_joint"]
+        qpos = joint.qpos.cpu().numpy()
+        # lower, upper = 0.0, 0.81
+        # return float(np.clip((qpos - lower) / (upper - lower), 0.0, 1.0))
+        return float(np.clip(qpos, 0.0, 0.81))
+    # FIXME: Please check whether this is correct

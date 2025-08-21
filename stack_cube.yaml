@@ -3,12 +3,12 @@ checkpoint:
   save_last_ckpt: true
   save_last_snapshot: false
   topk:
-    format_str: epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt
+    format_str: epoch={epoch:04d}.ckpt
     k: 5
     mode: max
     monitor_key: test_mean_score
 dataloader:
-  batch_size: 64
+  batch_size: 16
   num_workers: 8
   persistent_workers: false
   pin_memory: true
@@ -22,22 +22,22 @@ ema:
   power: 0.75
   update_after_step: 0
 exp_name: default
-horizon: 16
+horizon: 32
 keypoint_visible_rate: 1.0
 logging:
   group: null
   id: null
   mode: online
-  name: 2023.01.16-20.20.06_train_diffusion_unet_hybrid_pusht_image
+  name: train_diffusion_unet_hybrid_stackcube_ur10e_image
   project: diffusion_policy_debug
   resume: true
   tags:
   - train_diffusion_unet_hybrid
-  - pusht_image
+  - stackcube_ur10e_image
   - default
 multi_run:
-  run_dir: data/outputs/2023.01.16/20.20.06_train_diffusion_unet_hybrid_pusht_image
-  wandb_name_base: 2023.01.16-20.20.06_train_diffusion_unet_hybrid_pusht_image
+  run_dir: data/outputs/2023.01.16/20.20.06_train_diffusion_unet_hybrid_stackcube_ur10e_image
+  wandb_name_base: 2025.08_train_diffusion_unet_hybrid_stackcube_ur10e_image
 n_action_steps: 8
 n_latency_steps: 0
 n_obs_steps: 2
@@ -56,15 +56,15 @@ policy:
   _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_policy.DiffusionUnetHybridImagePolicy
   cond_predict_scale: true
   crop_shape:
-  - 84
-  - 84
+  - 500
+  - 500
   diffusion_step_embed_dim: 128
   down_dims:
   - 512
   - 1024
   - 2048
   eval_fixed_crop: true
-  horizon: 16
+  horizon: 32
   kernel_size: 5
   n_action_steps: 8
   n_groups: 8
@@ -84,81 +84,79 @@ policy:
   shape_meta:
     action:
       shape:
-      - 2
+      - 7
     obs:
       agent_pos:
         shape:
-        - 2
+        - 14
         type: low_dim
       image:
         shape:
         - 3
-        - 96
-        - 96
+        - 512
+        - 512
         type: rgb
 shape_meta:
   action:
     shape:
-    - 2
+    - 7
   obs:
     agent_pos:
       shape:
-      - 2
+      - 14
       type: low_dim
     image:
       shape:
       - 3
-      - 96
-      - 96
+      - 512
+      - 512
       type: rgb
 task:
   dataset:
-    _target_: diffusion_policy.dataset.pusht_image_dataset.PushTImageDataset
-    horizon: 16
+    _target_: diffusion_policy.dataset.pick_cube_ur10e_dataset.PickCubeUR10EDataset
+    horizon: 32
     max_train_episodes: 90
     pad_after: 7
     pad_before: 1
     seed: 42
-    val_ratio: 0.02
-    zarr_path: data/pusht/pusht_cchi_v7_replay.zarr
+    val_ratio: 0.1
+    zarr_path: data/compressed_data.zarr
   env_runner:
-    _target_: diffusion_policy.env_runner.pusht_image_runner.PushTImageRunner
-    fps: 10
-    legacy_test: true
-    max_steps: 300
+    _target_: diffusion_policy.env_runner.stack_cube_image_runner.StackCubeImageRunner
+    max_steps: 400
     n_action_steps: 8
-    n_envs: null
+    # n_envs: null
     n_obs_steps: 2
-    n_test: 50
+    n_test: 2
     n_test_vis: 4
-    n_train: 6
+    n_train: 3
     n_train_vis: 2
-    past_action: false
+    # past_action: false
     test_start_seed: 100000
     train_start_seed: 0
   image_shape:
   - 3
-  - 96
-  - 96
-  name: pusht_image
+  - 512
+  - 512
+  name: stack_cube_ur10e_image
   shape_meta:
     action:
       shape:
-      - 2
+      - 7
     obs:
       agent_pos:
         shape:
-        - 2
+        - 14
         type: low_dim
       image:
         shape:
         - 3
-        - 96
-        - 96
+        - 512
+        - 512
         type: rgb
-task_name: pusht_image
+task_name: stack_cube_ur10e_image
 training:
-  checkpoint_every: 50
+  checkpoint_every: 4
   debug: false
   device: cuda:0
   gradient_accumulate_every: 1
@@ -166,17 +164,17 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null
   max_val_steps: null
-  num_epochs: 3050
+  num_epochs: 80
   resume: true
-  rollout_every: 5
-  sample_every: 5
+  rollout_every: 4
+  sample_every: 4
   seed: 42
   tqdm_interval_sec: 1.0
   use_ema: true
   val_every: 1
 val_dataloader:
-  batch_size: 64
-  num_workers: 8
+  batch_size: 1
+  num_workers: 1
   persistent_workers: false
   pin_memory: true
   shuffle: false

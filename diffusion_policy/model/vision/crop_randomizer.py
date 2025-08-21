@@ -152,7 +152,7 @@ def crop_image_from_indices(images, crop_indices, crop_height, crop_width):
         crop_width (int): width of crop to take
 
     Returns:
-        crops (torch.Tesnor): cropped images of shape [..., C, @crop_height, @crop_width]
+        crops (torch.Tensor): cropped images of shape [..., C, @crop_height, @crop_width]
     """
 
     # make sure length of input shapes is consistent

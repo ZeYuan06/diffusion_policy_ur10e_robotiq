@@ -86,6 +86,17 @@ class PickCubeUR10EDataset(BaseImageDataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         sample = self.sampler.sample_sequence(idx)
         data = self._sample_to_data(sample)
+
+        # sampled_img = data['obs']['image'][0]
+        # sampled_img = np.transpose(sampled_img, (1, 2, 0))
+        # print("Sampled Image:", sampled_img)
+        # import matplotlib.pyplot as plt
+        # plt.imshow(sampled_img)
+        # plt.axis('off')
+        # plt.savefig(f"./debug_images/sample_image_plt.png")
+        # plt.close()
+        # exit()
+
         torch_data = dict_apply(data, torch.from_numpy)
         return torch_data
 
