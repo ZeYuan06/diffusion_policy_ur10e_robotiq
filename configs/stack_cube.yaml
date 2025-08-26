@@ -115,12 +115,12 @@ task:
   dataset:
     _target_: diffusion_policy.dataset.pick_cube_ur10e_dataset.PickCubeUR10EDataset
     horizon: 32
-    max_train_episodes: 90
+    max_train_episodes: 1 # 90
     pad_after: 7
     pad_before: 1
     seed: 42
     val_ratio: 0.02
-    zarr_path: data/compressed_data.zarr
+    zarr_path: data/singlecamera.zarr
   env_runner:
     _target_: diffusion_policy.env_runner.stack_cube_image_runner.StackCubeImageRunner
     max_steps: 400

@@ -206,6 +206,7 @@ class StackCubeImageRunner(BaseImageRunner):
                                 print(f"Unexpected image shape: {rgb_image.shape}")
                                 # continue
                             processed_obs['base_image'] = rgb_image.cpu().numpy()
+                            # processed_obs['image'] = rgb_image.cpu().numpy()
 
                     if 'sensor_data' in raw_obs and 'mount_camera' in raw_obs['sensor_data']:
                         # ManiSkill returns RGB image, handle different dimensions
