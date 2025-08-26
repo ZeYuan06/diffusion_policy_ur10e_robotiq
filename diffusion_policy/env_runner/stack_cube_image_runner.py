@@ -23,9 +23,7 @@ from diffusion_policy.env_runner.base_image_runner import BaseImageRunner
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 
 from .stack_cube_env import StackCubeEnv
-
-# Add agent path to sys.path for importing custom agent
-sys.path.append(os.path.join(os.getcwd(), 'agent'))
+from .stack_cube_multicamera_env import StackCubeMultiCameraEnv
 
 import mani_skill.envs
 from .robotiq_ur10e.ur10e_robotiq import UR10eRobotiq
@@ -207,7 +205,23 @@ class StackCubeImageRunner(BaseImageRunner):
                             else:
                                 print(f"Unexpected image shape: {rgb_image.shape}")
                                 # continue
-                            processed_obs['image'] = rgb_image.cpu().numpy()
+                            processed_obs['base_image'] = rgb_image.cpu().numpy()
+
+                    if 'sensor_data' in raw_obs and 'mount_camera' in raw_obs['sensor_data']:
+                        # ManiSkill returns RGB image, handle different dimensions
+                        rgb_image = raw_obs['sensor_data']['mount_camera']['rgb']
+                        if isinstance(rgb_image, torch.Tensor):
+                            # Handle different image dimensions
+                            if len(rgb_image.shape) == 4:  # [B, H, W, C]
+                                # Remove batch dimension and convert from [H, W, C] to [C, H, W]
+                                rgb_image = rgb_image.squeeze(0).permute(2, 0, 1).float() / 255.0
+                            elif len(rgb_image.shape) == 3:  # [H, W, C]
+                                # Convert from [H, W, C] to [C, H, W]
+                                rgb_image = rgb_image.permute(2, 0, 1).float() / 255.0
+                            else:
+                                print(f"Unexpected image shape: {rgb_image.shape}")
+                                # continue
+                            processed_obs['wrist_image'] = rgb_image.cpu().numpy()
                         
                     # Extract agent_pos - 14D state vector
                     # Composition: joint_positions(6D) + ee_pos_quat(7D) + gripper_position(1D)

@@ -28,20 +28,20 @@ logging:
   group: null
   id: null
   mode: online
-  name: train_diffusion_unet_hybrid_stackcube_ur10e_image
+  name: train_diffusion_unet_hybrid_multi_camera_stackcube_ur10e_image
   project: diffusion_policy_debug
   resume: true
   tags:
-  - train_diffusion_unet_hybrid
+  - train_diffusion_unet_hybrid_multi_camera
   - stackcube_ur10e_image
   - default
 multi_run:
   run_dir: data/outputs/2023.01.16/20.20.06_train_diffusion_unet_hybrid_stackcube_ur10e_image
-  wandb_name_base: 2025.08_train_diffusion_unet_hybrid_stackcube_ur10e_image
+  wandb_name_base: 2025.08_train_diffusion_multi_camera_stackcube_ur10e_image
 n_action_steps: 8
 n_latency_steps: 0
 n_obs_steps: 2
-name: train_diffusion_unet_hybrid
+name: train_diffusion_unet_hybrid_multi_camera
 obs_as_global_cond: true
 optimizer:
   _target_: torch.optim.AdamW
@@ -53,7 +53,7 @@ optimizer:
   weight_decay: 1.0e-06
 past_action_visible: false
 policy:
-  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_policy.DiffusionUnetHybridImagePolicy
+  _target_: diffusion_policy.policy.diffusion_unet_multi_images_policy.DiffusionUnetHybridMultiImagePolicy
   cond_predict_scale: true
   crop_shape:
   - 500
@@ -90,7 +90,13 @@ policy:
         shape:
         - 14
         type: low_dim
-      image:
+      base_image:
+        shape:
+        - 3
+        - 512
+        - 512
+        type: rgb
+      wrist_image:
         shape:
         - 3
         - 512
@@ -105,26 +111,33 @@ shape_meta:
       shape:
       - 14
       type: low_dim
-    image:
+    base_image:
       shape:
       - 3
       - 512
       - 512
-      type: rgb
+      type: base_rgb
+    wrist_rgb:
+      shape:
+      - 3
+      - 512
+      - 512
+      type: wrist_rgb
 task:
   dataset:
-    _target_: diffusion_policy.dataset.pick_cube_ur10e_dataset.PickCubeUR10EDataset
-    horizon: 32
+    _target_: diffusion_policy.dataset.multicamera_dataset.StackCubeUR10EDataset
+    horizon: 16
     max_train_episodes: 90
     pad_after: 7
     pad_before: 1
     seed: 42
-    val_ratio: 0.1
+    val_ratio: 0.02
     zarr_path: data/compressed_data.zarr
   env_runner:
     _target_: diffusion_policy.env_runner.stack_cube_image_runner.StackCubeImageRunner
     max_steps: 400
     n_action_steps: 8
+    env_id: StackCube-MultiCamera
     # n_envs: null
     n_obs_steps: 2
     n_test: 2
@@ -156,7 +169,7 @@ task:
         type: rgb
 task_name: stack_cube_ur10e_image
 training:
-  checkpoint_every: 4
+  checkpoint_every: 8
   debug: false
   device: cuda:0
   gradient_accumulate_every: 1
@@ -164,7 +177,7 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null
   max_val_steps: null
-  num_epochs: 80
+  num_epochs: 160
   resume: true
   rollout_every: 8
   sample_every: 8
