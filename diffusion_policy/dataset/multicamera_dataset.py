@@ -22,8 +22,17 @@ class StackCubeUR10EDataset(BaseImageDataset):
             ):
         
         super().__init__()
-        self.replay_buffer = ReplayBuffer.copy_from_path(
-            zarr_path, keys=['base_img', 'wrist_img', 'state', 'action'])
+        # Use lazy loading - create_from_path opens zarr file directly without loading to memory
+        self.replay_buffer = ReplayBuffer.create_from_path(zarr_path, mode='r')
+        
+        # Verify that all required keys exist in the zarr file
+        required_keys = ['base_img', 'wrist_img', 'state', 'action']
+        available_keys = list(self.replay_buffer.keys())
+        missing_keys = set(required_keys) - set(available_keys)
+        if missing_keys:
+            raise KeyError(f"Missing required keys in zarr file: {missing_keys}. "
+                          f"Available keys: {available_keys}")
+        
         val_mask = get_val_mask(
             n_episodes=self.replay_buffer.n_episodes, 
             val_ratio=val_ratio,
