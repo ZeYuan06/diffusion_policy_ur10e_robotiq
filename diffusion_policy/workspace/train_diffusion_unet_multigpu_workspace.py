@@ -30,7 +30,19 @@ from diffusion_policy.model.common.lr_scheduler import get_scheduler
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 class OriginalWorkspaceCheckpointCallback(pl.Callback):
-    """Custom callback to replicate original workspace checkpoint behavior"""
+    """
+    Custom callback to replicate original workspace checkpoint behavior.
+    
+    This callback handles:
+    1. Environment rollout evaluation
+    2. Diffusion sampling evaluation  
+    3. JSON logging of metrics
+    4. Checkpoint saving (including TopK checkpoints)
+    
+    The callback ensures proper execution order: rollout -> sampling -> checkpoint saving
+    This guarantees that metrics like 'test_mean_score' are available before checkpoint evaluation.
+    """
+    
     def __init__(self, workspace):
         super().__init__()
         self.workspace = workspace
@@ -44,59 +56,245 @@ class OriginalWorkspaceCheckpointCallback(pl.Callback):
                 **self.workspace.cfg.checkpoint.topk
             )
     
-    def on_validation_epoch_end(self, trainer, pl_module):
-        """Handle checkpoint saving following original code logic"""
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        """Handle rollout, sampling, and checkpoint saving following original code logic"""
         if not trainer.is_global_zero:
             return
             
         cfg = self.workspace.cfg
         current_epoch = trainer.current_epoch
         
-        # checkpoint handling (following original code frequency control)
-        if (current_epoch % cfg.training.checkpoint_every) == 0:
-            # save last checkpoint
-            if cfg.checkpoint.save_last_ckpt:
-                self.workspace.save_checkpoint()
+        # ===== 1. Execute rollout and sampling to generate metrics =====
+        step_log = self._run_evaluation_tasks(trainer, pl_module, cfg, current_epoch)
+        
+        # ===== 2. Log metrics to JSON logger =====
+        self._log_to_json(trainer, current_epoch, step_log, pl_module)
+        
+        # ===== 3. Handle checkpoint saving =====
+        self._handle_checkpoint_saving(trainer, cfg, current_epoch, step_log)
+    
+    def _run_evaluation_tasks(self, trainer, pl_module, cfg, current_epoch):
+        """Run environment rollout and diffusion sampling tasks"""
+        step_log = {}
+        
+        # Select policy to evaluate
+        policy = self._get_evaluation_policy(pl_module, cfg)
+        policy.eval()
+        
+        # Run environment rollout
+        if self._should_run_rollout(current_epoch, cfg):
+            step_log.update(self._run_environment_rollout(pl_module, policy, current_epoch))
+        
+        # Run diffusion sampling
+        if self._should_run_sampling(current_epoch, cfg):
+            step_log.update(self._run_diffusion_sampling(pl_module, policy, current_epoch))
+        
+        policy.train()
+        return step_log
+    
+    def _get_evaluation_policy(self, pl_module, cfg):
+        """Get the policy model for evaluation (EMA or regular model)"""
+        if cfg.training.use_ema and hasattr(pl_module, 'ema_model') and getattr(pl_module, 'ema_model', None) is not None:
+            policy = getattr(pl_module, 'ema_model', None)
+        else:
+            policy = getattr(pl_module, 'model', None)
+        
+        assert policy is not None, "Policy should be available for evaluation"
+        return policy
+    
+    def _should_run_rollout(self, current_epoch, cfg):
+        """Check if we should run environment rollout this epoch"""
+        return ((current_epoch + 1) % cfg.training.rollout_every) == 0
+    
+    def _should_run_sampling(self, current_epoch, cfg):
+        """Check if we should run diffusion sampling this epoch"""
+        return ((current_epoch + 1) % cfg.training.sample_every) == 0
+    
+    def _run_environment_rollout(self, pl_module, policy, current_epoch):
+        """Run environment rollout and return logged metrics"""
+        step_log = {}
+        
+        # Check if env_runner exists in pl_module (where it's actually created)
+        if hasattr(pl_module, 'env_runner') and pl_module.env_runner is not None:
+            print(f"Running environment rollout at epoch {current_epoch}")
+            runner_log = pl_module.env_runner.run(policy)
+            step_log.update(runner_log)
             
-            # save last snapshot
-            if cfg.checkpoint.save_last_snapshot:
-                self.workspace.save_snapshot()
-            
-            # topk checkpoint management
-            if self.topk_manager is not None:
-                # get metrics for topk evaluation
-                metric_dict = {}
-                logged_metrics = trainer.logged_metrics
-                for key, value in logged_metrics.items():
-                    if isinstance(value, torch.Tensor):
-                        new_key = key.replace('/', '_')
-                        metric_dict[new_key] = value.item()
+            # Log to wandb
+            for key, value in runner_log.items():
+                pl_module.log(f'env/{key}', value, on_epoch=True)
+        else:
+            print("Warning: env_runner is not set, skipping environment evaluation.")
+        
+        return step_log
+    
+    def _run_diffusion_sampling(self, pl_module, policy, current_epoch):
+        """Run diffusion sampling and return logged metrics"""
+        step_log = {}
+        
+        train_sampling_batch = getattr(pl_module, 'train_sampling_batch', None)
+        if train_sampling_batch is not None:
+            print(f"Running diffusion sampling at epoch {current_epoch}")
+            with torch.no_grad():
+                # Sample trajectory from training set, and evaluate difference
+                obs_dict = dict_apply(
+                    train_sampling_batch['obs'], 
+                    lambda x: x.to(pl_module.device)
+                )
+                gt_action = train_sampling_batch['action'].to(pl_module.device)
                 
-                # get topk checkpoint path
+                result = policy.predict_action(obs_dict)
+                pred_action = result['action_pred']
+                mse = torch.nn.functional.mse_loss(pred_action, gt_action)
+                
+                step_log['train_action_mse_error'] = mse.item()
+                pl_module.log('train_action_mse_error', mse, on_epoch=True, sync_dist=True)
+                
+                # Clean up memory
+                del obs_dict, gt_action, result, pred_action, mse
+        else:
+            print("Warning: train_sampling_batch is not set, skipping sampling evaluation.")
+        
+        return step_log
+    
+    def _log_to_json(self, trainer, current_epoch, step_log, pl_module):
+        """Log metrics to JSON logger"""
+        # Check if json_logger exists in pl_module (where it's actually created)
+        if hasattr(pl_module, 'json_logger') and pl_module.json_logger is not None:
+            final_log = {
+                'global_step': trainer.global_step,
+                'epoch': current_epoch,
+            }
+            
+            # Add training metrics
+            if hasattr(trainer, 'logged_metrics') and trainer.logged_metrics:
+                self._add_trainer_metrics(final_log, trainer.logged_metrics)
+            
+            # Add evaluation metrics
+            final_log.update(step_log)
+            
+            # Log to json file
+            pl_module.json_logger.log(final_log)
+    
+    def _add_trainer_metrics(self, final_log, logged_metrics):
+        """Add trainer logged metrics to final log"""
+        for key, value in logged_metrics.items():
+            if isinstance(value, torch.Tensor):
+                final_log[key] = float(value.item())
+    
+    def _handle_checkpoint_saving(self, trainer, cfg, current_epoch, step_log):
+        """Handle checkpoint saving logic"""
+        if not self._should_save_checkpoint(current_epoch, cfg):
+            return
+        
+        # Save standard checkpoints
+        self._save_standard_checkpoints(cfg)
+        
+        # Handle TopK checkpoint saving
+        self._save_topk_checkpoint(trainer, step_log)
+    
+    def _should_save_checkpoint(self, current_epoch, cfg):
+        """Check if we should save checkpoint this epoch"""
+        return ((current_epoch + 1) % cfg.training.checkpoint_every) == 0
+    
+    def _save_standard_checkpoints(self, cfg):
+        """Save last checkpoint and snapshot"""
+        if cfg.checkpoint.save_last_ckpt:
+            self.workspace.save_checkpoint()
+        
+        if cfg.checkpoint.save_last_snapshot:
+            self.workspace.save_snapshot()
+    
+    def _save_topk_checkpoint(self, trainer, step_log):
+        """Save TopK checkpoint if metrics are available"""
+        if self.topk_manager is None:
+            return
+        
+        # Collect all available metrics
+        metric_dict = self._collect_metrics(trainer, step_log)
+        print(f"Available metrics for TopK: {list(metric_dict.keys())}")
+        
+        try:
+            # Check if required metric exists and save checkpoint
+            monitor_key = getattr(self.topk_manager, 'monitor_key', None)
+            if monitor_key and monitor_key in metric_dict:
                 topk_ckpt_path = self.topk_manager.get_ckpt_path(metric_dict)
                 if topk_ckpt_path is not None:
                     self.workspace.save_checkpoint(path=topk_ckpt_path)
+                    print(f"Saved TopK checkpoint: {topk_ckpt_path}")
+            else:
+                print(f"Warning: Monitor key '{monitor_key}' not found in metrics.")
+                print(f"Available metrics: {list(metric_dict.keys())}")
+                # Fallback to val_loss if available
+                self._try_fallback_metric(metric_dict)
+        except Exception as e:
+            print(f"Error saving TopK checkpoint: {e}")
+    
+    def _collect_metrics(self, trainer, step_log):
+        """Collect all metrics from trainer and step_log"""
+        metric_dict = {}
+        
+        # Add trainer logged metrics
+        if hasattr(trainer, 'logged_metrics') and trainer.logged_metrics:
+            for key, value in trainer.logged_metrics.items():
+                if isinstance(value, torch.Tensor):
+                    new_key = key.replace('/', '_')
+                    metric_dict[new_key] = value.item()
+        
+        # Add step_log metrics
+        for key, value in step_log.items():
+            if key not in metric_dict:
+                metric_dict[key.replace('/', '_')] = value
+        
+        return metric_dict
+    
+    def _try_fallback_metric(self, metric_dict):
+        """Try to use fallback metric (val_loss) for checkpoint saving"""
+        if 'val_loss' in metric_dict and self.topk_manager is not None:
+            print("Using val_loss as fallback metric for TopK checkpoint")
+            try:
+                # Temporarily modify topk_manager settings
+                original_key = getattr(self.topk_manager, 'monitor_key', None)
+                original_mode = getattr(self.topk_manager, 'mode', None)
+                
+                if hasattr(self.topk_manager, 'monitor_key'):
+                    self.topk_manager.monitor_key = 'val_loss'
+                if hasattr(self.topk_manager, 'mode'):
+                    self.topk_manager.mode = 'min'  # val_loss should be minimized
+                
+                topk_ckpt_path = self.topk_manager.get_ckpt_path(metric_dict)
+                if topk_ckpt_path is not None:
+                    self.workspace.save_checkpoint(path=topk_ckpt_path)
+                    print(f"Saved TopK checkpoint using val_loss: {topk_ckpt_path}")
+                
+                # Restore original settings
+                if original_key is not None and hasattr(self.topk_manager, 'monitor_key'):
+                    self.topk_manager.monitor_key = original_key
+                if original_mode is not None and hasattr(self.topk_manager, 'mode'):
+                    self.topk_manager.mode = original_mode
+            except Exception as e:
+                print(f"Error using fallback metric: {e}")
 
 
 class DiffusionPolicyMultiGpuLightningModule(pl.LightningModule):
+    """Lightning Module for multi-GPU diffusion policy training"""
+    
     def __init__(self, cfg: OmegaConf, output_dir):
         super().__init__()
         self.save_hyperparameters()
         self.cfg = cfg
         self.output_dir = output_dir
 
-        # Do not load the model here to avoid memory usage
+        # Initialize model-related attributes (loaded lazily)
         self.model = None
         self.ema_model = None
         self.ema = None
         
-        # store training batch for sampling
+        # Training utilities
         self.train_sampling_batch = None
         
-        # environment runner for validation (only created on rank 0)
+        # Main process only attributes
         self.env_runner = None
-        
-        # json logger (only on rank 0)
         self.json_logger = None
         
     def configure_model(self, normalizer=None):
@@ -123,23 +321,28 @@ class DiffusionPolicyMultiGpuLightningModule(pl.LightningModule):
     def setup(self, stage=None):
         """Lightning calls this method on each process"""
         if stage == 'fit':
-            # If the model is not yet configured, configure it here (without normalizer)
+            # Configure model if not already done
             if self.model is None:
                 self.configure_model()
                 
-            # only create these on main process
+            # Setup main process only components
             if self.trainer.is_global_zero:
-                self.env_runner = hydra.utils.instantiate(
-                    self.cfg.task.env_runner,
-                    output_dir=self.output_dir
-                )
-                
-                # setup json logger
-                log_path = os.path.join(self.output_dir, 'logs.json.txt')
-                # create the file if it does not exist
-                pathlib.Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-                self.json_logger = JsonLogger(log_path)
-                self.json_logger.start()
+                self._setup_env_runner()
+                self._setup_json_logger()
+    
+    def _setup_env_runner(self):
+        """Setup environment runner for evaluation (main process only)"""
+        self.env_runner = hydra.utils.instantiate(
+            self.cfg.task.env_runner,
+            output_dir=self.output_dir
+        )
+    
+    def _setup_json_logger(self):
+        """Setup JSON logger for training metrics (main process only)"""
+        log_path = os.path.join(self.output_dir, 'logs.json.txt')
+        pathlib.Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        self.json_logger = JsonLogger(log_path)
+        self.json_logger.start()
     
     def configure_optimizers(self):
         # Ensure the model is already configured
@@ -180,40 +383,53 @@ class DiffusionPolicyMultiGpuLightningModule(pl.LightningModule):
         # Ensure the model is already configured
         assert self.model is not None, "Model should be configured before training"
         
-        # save first batch for sampling
+        # Save first batch for sampling
+        self._save_sampling_batch(batch)
+            
+        # Compute loss
+        raw_loss = self.model.compute_loss(batch)
+        loss = raw_loss / self.cfg.training.gradient_accumulate_every
+        
+        # Update EMA (only on main process)
+        self._update_ema()
+        
+        # Log metrics
+        self._log_training_metrics(raw_loss, batch_idx)
+        
+        return loss
+    
+    def _save_sampling_batch(self, batch):
+        """Save first batch for sampling evaluation"""
         if self.train_sampling_batch is None:
             self.train_sampling_batch = {
                 'obs': dict_apply(batch['obs'], lambda x: x.cpu()),
                 'action': batch['action'].cpu()
             }
-            
-        # compute loss (following original code logic)
-        raw_loss = self.model.compute_loss(batch)
-        loss = raw_loss / self.cfg.training.gradient_accumulate_every
-        
-        # update EMA (only on main process)
+    
+    def _update_ema(self):
+        """Update EMA model on main process only"""
         if self.cfg.training.use_ema and self.trainer.is_global_zero and self.ema is not None:
             self.ema.step(self.model)
-        
-        # log metrics (following original code structure)
+    
+    def _log_training_metrics(self, raw_loss, batch_idx):
+        """Log training metrics to wandb and json logger"""
+        # Log to wandb
         self.log('train_loss', raw_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('lr', self.trainer.optimizers[0].param_groups[0]['lr'], on_step=True, sync_dist=False)
         
-        # log to json logger (only on main process, following original code)
+        # Log to json logger (only on main process)
         if (self.trainer.is_global_zero and 
-        hasattr(self, 'json_logger') and 
-        self.json_logger is not None):
+            hasattr(self, 'json_logger') and 
+            self.json_logger is not None):
             step_log = {
                 'train_loss': raw_loss.item(),
                 'global_step': self.global_step,
                 'epoch': self.current_epoch,
                 'lr': self.trainer.optimizers[0].param_groups[0]['lr']
             }
-            # only log intermediate steps, final step is logged in on_validation_epoch_end
+            # Only log intermediate steps, final step is logged in callback
             if not self._is_last_batch_in_epoch(batch_idx):
                 self.json_logger.log(step_log)
-        
-        return loss
     
     def _is_last_batch_in_epoch(self, batch_idx):
         """Check if this is the last batch in the current epoch"""
@@ -232,82 +448,13 @@ class DiffusionPolicyMultiGpuLightningModule(pl.LightningModule):
         return loss
     
     def on_validation_epoch_end(self):
-        """Run environment tests and sampling at the end of validation epoch"""
+        """Simplified validation epoch end - rollout and sampling logic moved to callback"""
         if not self.trainer.is_global_zero:
             return
-            
-        step_log = {}
         
-        # select policy to evaluate
-        policy = self.ema_model if (self.cfg.training.use_ema and self.ema_model is not None) else self.model
-        assert policy is not None, "Policy should be available for evaluation"
-        policy.eval()
-        
-        # run environment rollout (following original code frequency control)
-        if (self.current_epoch % self.cfg.training.rollout_every) == 0:
-            if self.env_runner is not None:
-                runner_log = self.env_runner.run(policy)
-                # log environment test results to both wandb and step_log
-                step_log.update(runner_log)
-                for key, value in runner_log.items():
-                    self.log(f'env/{key}', value, on_epoch=True)
-            else:
-                print("Warning: env_runner is not set, skipping environment evaluation.")
-        
-        # run diffusion sampling (following original code frequency control)
-        if (self.current_epoch % self.cfg.training.sample_every) == 0:
-            if self.train_sampling_batch is not None:
-                with torch.no_grad():
-                    # sample trajectory from training set, and evaluate difference
-                    obs_dict = dict_apply(
-                        self.train_sampling_batch['obs'], 
-                        lambda x: x.to(self.device)
-                    )
-                    gt_action = self.train_sampling_batch['action'].to(self.device)
-                    
-                    result = policy.predict_action(obs_dict)
-                    pred_action = result['action_pred']
-                    mse = torch.nn.functional.mse_loss(pred_action, gt_action)
-                    
-                    step_log['train_action_mse_error'] = mse.item()
-                    self.log('train_action_mse_error', mse, on_epoch=True)
-                    
-                    # clean up memory like in original code
-                    del obs_dict
-                    del gt_action
-                    del result
-                    del pred_action
-                    del mse
-            else:
-                print("Warning: train_sampling_batch is not set, skipping sampling evaluation.")
-        
-        # checkpoint handling is now handled at workspace level
-        # keeping this section minimal to match original code structure
-        
-        # log final step metrics to json logger (following original code)
-        if self.json_logger is not None:
-            final_log = {
-                'global_step': self.global_step,
-                'epoch': self.current_epoch,
-            }
-            
-            # add train_loss epoch average (equivalent to original code)
-            if 'train_loss_epoch' in self.trainer.logged_metrics:
-                final_log['train_loss'] = float(self.trainer.logged_metrics['train_loss_epoch'].item())
-            
-            # add all other logged metrics
-            logged_metrics = self.trainer.logged_metrics
-            for key, value in logged_metrics.items():
-                if isinstance(value, torch.Tensor):
-                    final_log[key] = float(value.item())
-            
-            # add step_log metrics
-            final_log.update(step_log)
-            
-            # log to json file
-            self.json_logger.log(final_log)
-        
-        policy.train()
+        # The rollout and sampling logic is now handled by the OriginalWorkspaceCheckpointCallback
+        # This ensures proper execution order: rollout -> sampling -> checkpoint saving
+        print(f"Validation epoch {self.current_epoch} completed")
     
     def on_train_epoch_end(self):
         """Called at the end of each training epoch"""

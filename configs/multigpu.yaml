@@ -6,10 +6,10 @@ checkpoint:
     format_str: epoch={epoch:04d}.ckpt
     k: 5
     mode: max
-    monitor_key: test_mean_score
+    monitor_key: env_test_mean_score
 dataloader:
   batch_size: 32
-  num_workers: 8
+  num_workers: 4
   persistent_workers: false
   pin_memory: true
   shuffle: true
@@ -175,7 +175,7 @@ training:
   strategy: ddp_find_unused_parameters_true
   device: auto
   precision: 32
-  gradient_accumulate_every: 1
+  gradient_accumulate_every: 8
   lr_scheduler: cosine
   lr_warmup_steps: 500
   max_train_steps: null
@@ -190,7 +190,7 @@ training:
   val_every: 4
 val_dataloader:
   batch_size: 32
-  num_workers: 8
+  num_workers: 4
   persistent_workers: false
   pin_memory: true
   shuffle: false
