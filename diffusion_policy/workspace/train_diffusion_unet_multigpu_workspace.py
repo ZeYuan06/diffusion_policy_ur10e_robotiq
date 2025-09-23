@@ -43,19 +43,29 @@ class OriginalWorkspaceCheckpointCallback(pl.Callback):
     This guarantees that metrics like 'test_mean_score' are available before checkpoint evaluation.
     """
     
-    def __init__(self, workspace):
+    def __init__(self, workspace, enable_validation_during_training=False):
         super().__init__()
         self.workspace = workspace
         self.topk_manager = None
+        self.enable_validation_during_training = enable_validation_during_training
         
     def setup(self, trainer, pl_module, stage):
         """Initialize TopK manager on main process only"""
-        if trainer.is_global_zero:
+        if trainer.is_global_zero and self.enable_validation_during_training:
             self.topk_manager = TopKCheckpointManager(
                 save_dir=os.path.join(self.workspace.output_dir, 'checkpoints'),
                 **self.workspace.cfg.checkpoint.topk
             )
     
+    def on_train_epoch_end(self, trainer, pl_module):
+        if not trainer.is_global_zero:
+            return
+        
+        cfg = self.workspace.cfg
+        current_epoch = trainer.current_epoch
+
+        self._handle_checkpoint_saving_only(trainer, cfg, current_epoch)
+
     def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """Handle rollout, sampling, and checkpoint saving following original code logic"""
         if not trainer.is_global_zero:
@@ -64,6 +74,12 @@ class OriginalWorkspaceCheckpointCallback(pl.Callback):
         cfg = self.workspace.cfg
         current_epoch = trainer.current_epoch
         
+        # If validation during training is disabled, only save checkpoints
+        if not self.enable_validation_during_training:
+            # self._handle_checkpoint_saving_only(trainer, cfg, current_epoch)
+            return
+        
+        # Original full validation logic
         # ===== 1. Execute rollout and sampling to generate metrics =====
         step_log = self._run_evaluation_tasks(trainer, pl_module, cfg, current_epoch)
         
@@ -117,8 +133,14 @@ class OriginalWorkspaceCheckpointCallback(pl.Callback):
         # Check if env_runner exists in pl_module (where it's actually created)
         if hasattr(pl_module, 'env_runner') and pl_module.env_runner is not None:
             print(f"Running environment rollout at epoch {current_epoch}")
-            runner_log = pl_module.env_runner.run(policy)
-            step_log.update(runner_log)
+            was_training = policy.training
+            policy.eval()
+
+            with torch.no_grad():
+                runner_log = pl_module.env_runner.run(policy)
+                step_log.update(runner_log)
+
+            policy.train(was_training)
             
             # Log to wandb
             for key, value in runner_log.items():
@@ -192,6 +214,29 @@ class OriginalWorkspaceCheckpointCallback(pl.Callback):
         
         # Handle TopK checkpoint saving
         self._save_topk_checkpoint(trainer, step_log)
+    
+    def _handle_checkpoint_saving_only(self, trainer, cfg, current_epoch):
+        """Handle checkpoint saving only without validation/rollout/sampling"""
+        if not self._should_save_checkpoint(current_epoch, cfg):
+            return
+        
+        print(f"Saving checkpoint at epoch {current_epoch} (training-only mode)")
+        
+        # Save standard checkpoints without TopK strategy
+        if cfg.checkpoint.save_last_ckpt:
+            self.workspace.save_checkpoint()
+        
+        if cfg.checkpoint.save_last_snapshot:
+            self.workspace.save_snapshot()
+        
+        # In training-only mode, save all checkpoints with epoch number
+        epoch_ckpt_path = os.path.join(
+            self.workspace.output_dir, 
+            'checkpoints', 
+            f'epoch_{current_epoch:04d}.ckpt'
+        )
+        self.workspace.save_checkpoint(path=epoch_ckpt_path)
+        print(f"Saved epoch checkpoint: {epoch_ckpt_path}")
     
     def _should_save_checkpoint(self, current_epoch, cfg):
         """Check if we should save checkpoint this epoch"""
@@ -465,26 +510,166 @@ class DiffusionPolicyMultiGpuLightningModule(pl.LightningModule):
         """Called when training ends"""
         # close json logger properly
         if self.trainer.is_global_zero and self.json_logger is not None:
-            self.json_logger.close()
+            self.json_logger.stop()
 
 class DiffusionMultiGpuDataModule(pl.LightningDataModule):
-    def __init__(self, cfg: OmegaConf):
+    def __init__(self, cfg: OmegaConf, output_dir=None):
         super().__init__()
         self.cfg = cfg
+        self.output_dir = output_dir
+        # Initialize all dataset attributes
+        self.full_dataset = None
+        self.train_dataset = None
+        self.val_dataset = None
+        self.normalizer = None
         
     def setup(self, stage=None):
-        # configure dataset
-        self.dataset = hydra.utils.instantiate(self.cfg.task.dataset)
-        self.val_dataset = self.dataset.get_validation_dataset()
+        """Setup data module based on stage: 'fit' for training, 'validate' for evaluation"""
+        print(f"Setting up data module for stage: {stage}")
         
-        # get normalizer
-        self.normalizer = self.dataset.get_normalizer()
+        # Set up validation mask save path for consistent train/val splits
+        self._setup_validation_mask_path(stage=stage)
+        
+        # Create the full dataset with validation mask configuration
+        self.full_dataset = hydra.utils.instantiate(self.cfg.task.dataset)
+        
+        if stage == "fit" or stage is None:
+            # Training stage: setup training data and save validation split
+            self._setup_for_training()
+        elif stage in ["validate", "test"]:
+            # Evaluation stage: load saved validation split
+            self._setup_for_evaluation()
+        else:
+            # Default: setup both datasets
+            self._setup_default()
+            
+    def _setup_validation_mask_path(self, stage=None):
+        """Configure validation mask save path in dataset config"""
+        if (self.output_dir and 
+            hasattr(self.cfg, 'task') and 
+            hasattr(self.cfg.task, 'dataset')):
+            
+            # Only set if not already configured
+            if not hasattr(self.cfg.task.dataset, 'val_mask_save_path') or self.cfg.task.dataset.val_mask_save_path is None:
+                val_mask_path = os.path.join(self.output_dir, 'val_mask.pkl')
+                self.cfg.task.dataset.val_mask_save_path = val_mask_path
+                if stage == 'fit':
+                    self.cfg.task.dataset.load_existing_val_mask = False
+                    print(f"Set validation mask save path to: {val_mask_path}")
+                elif stage in ['validate', 'test']:
+                    self.cfg.task.dataset.load_existing_val_mask = True
+                    print(f"Loading existing validation mask from: {val_mask_path}")
+                else:
+                    raise ValueError(f"Unknown stage: {stage}")
+    
+    def _setup_for_training(self):
+        """Setup for training: use training data only, save validation split"""
+        print("Setting up for training stage...")
+        
+        # Get training-only dataset (excludes validation episodes)
+        self.train_dataset = self.full_dataset.get_train_only_dataset()
+        # Also get validation dataset to save the split
+        self.val_dataset = self.full_dataset.get_validation_dataset()
+        
+        # Compute normalizer from TRAINING DATA ONLY
+        self.normalizer = self.train_dataset.get_normalizer(**self.cfg.task.dataset.get('normalizer', {}))
+        
+        # Save normalizer for evaluation stage
+        self._save_normalizer()
+        
+        # For compatibility with Lightning DataModule interface
+        self.dataset = self.train_dataset
+        
+        print(f"Training setup complete:")
+        print(f"  Training samples: {len(self.train_dataset)}")
+        print(f"  Validation samples: {len(self.val_dataset)} (saved for evaluation)")
+        print(f"  Normalizer computed from training data only")
+        
+    def _setup_for_evaluation(self):
+        """Setup for evaluation: load saved validation split and normalizer"""
+        print("Setting up for evaluation stage...")
+        
+        # Get validation dataset using saved validation mask
+        self.val_dataset = self.full_dataset.get_validation_dataset()
+        
+        # Try to load saved normalizer first
+        if self._load_saved_normalizer():
+            print("Loaded saved normalizer from training")
+        else:
+            print("Warning: No saved normalizer found, computing from training data")
+            # Fallback: compute from training data
+            train_dataset = self.full_dataset.get_train_only_dataset()
+            self.normalizer = train_dataset.get_normalizer(**self.cfg.task.dataset.get('normalizer', {}))
+        
+        # For compatibility
+        self.dataset = self.val_dataset
+        
+        print(f"Evaluation setup complete:")
+        print(f"  Validation samples: {len(self.val_dataset)}")
+        print(f"  Using saved normalizer for consistency")
+        
+    def _setup_default(self):
+        """Default setup: create both datasets"""
+        print("Setting up default configuration...")
+        
+        self.train_dataset = self.full_dataset.get_train_only_dataset()
+        self.val_dataset = self.full_dataset.get_validation_dataset()
+        self.normalizer = self.train_dataset.get_normalizer(**self.cfg.task.dataset.get('normalizer', {}))
+        self.dataset = self.train_dataset
+        
+        print(f"Default setup complete:")
+        print(f"  Training samples: {len(self.train_dataset)}")
+        print(f"  Validation samples: {len(self.val_dataset)}")
+    
+    def _save_normalizer(self):
+        """Save normalizer for consistent evaluation"""
+        if not self.output_dir or not self.normalizer:
+            return
+            
+        normalizer_path = os.path.join(self.output_dir, 'normalizer.pkl')
+        try:
+            os.makedirs(os.path.dirname(normalizer_path), exist_ok=True)
+            import pickle
+            with open(normalizer_path, 'wb') as f:
+                pickle.dump(self.normalizer, f)
+            print(f"Saved normalizer to: {normalizer_path}")
+        except Exception as e:
+            print(f"Warning: Could not save normalizer: {e}")
+    
+    def _load_saved_normalizer(self):
+        """Load saved normalizer from training"""
+        if not self.output_dir:
+            return False
+            
+        normalizer_path = os.path.join(self.output_dir, 'normalizer.pkl')
+        if not os.path.exists(normalizer_path):
+            return False
+        
+        try:
+            import pickle
+            with open(normalizer_path, 'rb') as f:
+                self.normalizer = pickle.load(f)
+            print(f"Loaded normalizer from: {normalizer_path}")
+            return True
+        except Exception as e:
+            print(f"Warning: Could not load saved normalizer: {e}")
+            return False
         
     def train_dataloader(self):
-        return DataLoader(self.dataset, **self.cfg.dataloader)
+        """Return training dataloader"""
+        if self.train_dataset is not None:
+            return DataLoader(self.train_dataset, **self.cfg.dataloader)
+        elif self.dataset is not None:
+            return DataLoader(self.dataset, **self.cfg.dataloader)
+        else:
+            raise RuntimeError("No training dataset available. Call setup('fit') first.")
     
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, **self.cfg.val_dataloader)
+        """Return validation dataloader"""
+        if self.val_dataset is not None:
+            return DataLoader(self.val_dataset, **self.cfg.val_dataloader)
+        else:
+            raise RuntimeError("No validation dataset available. Call setup() first.")
 
 class TrainDiffusionUnetMultiGpuWorkspace(BaseWorkspace):
     include_keys = ['global_step', 'epoch']
@@ -499,12 +684,66 @@ class TrainDiffusionUnetMultiGpuWorkspace(BaseWorkspace):
         self.lightning_model = DiffusionPolicyMultiGpuLightningModule(cfg, output_dir=self.output_dir)
 
         self.cfg = cfg
+        self._current_trainer = None
+
+    def set_trainer(self, trainer):
+        """Set trainer reference for adding Lightning metadata to checkpoints"""
+        self._current_trainer = trainer
+
+    def save_checkpoint(self, path=None, tag='latest', 
+                       exclude_keys=None, include_keys=None, use_thread=True):
+        """Override to add PyTorch Lightning compatible metadata"""
+        import dill
+        import threading
+        
+        if path is None:
+            path = pathlib.Path(self.output_dir).joinpath('checkpoints', f'{tag}.ckpt')
+        else:
+            path = pathlib.Path(path)
+        if exclude_keys is None:
+            exclude_keys = tuple(self.exclude_keys)
+        if include_keys is None:
+            include_keys = tuple(self.include_keys) + ('_output_dir',)
+
+        path.parent.mkdir(parents=False, exist_ok=True)
+        payload = {
+            'cfg': self.cfg,
+            'state_dicts': dict(),
+            'pickles': dict()
+        }
+        
+        # Add trainer metadata if available
+        if self._current_trainer is not None:
+            payload['epoch'] = self._current_trainer.current_epoch
+            payload['global_step'] = self._current_trainer.global_step
+            payload['pytorch-lightning_version'] = pl.__version__
+
+        for key, value in self.__dict__.items():
+            if hasattr(value, 'state_dict') and hasattr(value, 'load_state_dict'):
+                # modules, optimizers and samplers etc
+                if key not in exclude_keys:
+                    if use_thread:
+                        from diffusion_policy.workspace.base_workspace import _copy_to_cpu
+                        payload['state_dicts'][key] = _copy_to_cpu(value.state_dict())
+                    else:
+                        payload['state_dicts'][key] = value.state_dict()
+            elif key in include_keys:
+                payload['pickles'][key] = dill.dumps(value)
+                
+        if use_thread:
+            self._saving_thread = threading.Thread(
+                target=lambda : torch.save(payload, path.open('wb'), pickle_module=dill))
+            self._saving_thread.start()
+        else:
+            torch.save(payload, path.open('wb'), pickle_module=dill)
+        
+        return str(path.absolute())
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
 
-        # create data module
-        data_module = DiffusionMultiGpuDataModule(cfg)
+        # create data module with output_dir for validation mask saving
+        data_module = DiffusionMultiGpuDataModule(cfg, output_dir=self.output_dir)
         data_module.setup()
         
         # create lightning model
@@ -523,8 +762,12 @@ class TrainDiffusionUnetMultiGpuWorkspace(BaseWorkspace):
         # configure callbacks
         callbacks = []
         
-        # add original workspace checkpoint callback to replicate exact behavior
-        checkpoint_callback = OriginalWorkspaceCheckpointCallback(self)
+        # Add original workspace checkpoint callback
+        # Set enable_validation_during_training to False for training-only mode
+        checkpoint_callback = OriginalWorkspaceCheckpointCallback(
+            self, 
+            enable_validation_during_training=False
+        )
         callbacks.append(checkpoint_callback)
         
         # learning rate monitor callback
@@ -541,16 +784,20 @@ class TrainDiffusionUnetMultiGpuWorkspace(BaseWorkspace):
             callbacks=callbacks,
             gradient_clip_val=cfg.training.get('gradient_clip_val', None),
             accumulate_grad_batches=cfg.training.gradient_accumulate_every,
-            check_val_every_n_epoch=cfg.training.val_every,
+            check_val_every_n_epoch=None,    #cfg.training.checkpoint_every,  # Only validate when saving checkpoints
+            enable_checkpointing=False,
+            num_sanity_val_steps=0,  # Skip sanity validation steps in training-only mode
             precision=cfg.training.get('precision', 32),
             enable_progress_bar=True,
             enable_model_summary=True,
             # add debug mode support (following original code)
             fast_dev_run=cfg.training.get('debug', False),
             limit_train_batches=cfg.training.get('max_train_steps', None),
-            limit_val_batches=cfg.training.get('max_val_steps', None),
-            num_sanity_val_steps=0
+            limit_val_batches=0, #cfg.training.get('max_val_steps', None),
         )
+        
+        # Set trainer reference for checkpoint metadata
+        self.set_trainer(trainer)
         
         # resume from checkpoint
         ckpt_path = None

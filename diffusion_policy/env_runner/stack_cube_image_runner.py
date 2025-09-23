@@ -100,7 +100,7 @@ class StackCubeImageRunner(BaseImageRunner):
         self.env = None
         self.agent = None
         
-    def create_single_env(self, seed, record_video=True, video_filename=None):
+    def create_single_env(self, record_video=True, video_filename=None):
         """
         Create a single environment instance
         
@@ -171,7 +171,7 @@ class StackCubeImageRunner(BaseImageRunner):
             
             # Create environment for this episode
             try:                
-                env = self.create_single_env(seed=seed, record_video=record_video)
+                env = self.create_single_env(record_video=record_video)
             except Exception as e:
                 print(f"Error creating environment: {e}")
                 import traceback
@@ -525,7 +525,7 @@ class StackCubeImageRunner(BaseImageRunner):
             
             # Create environment
             try:
-                env = self.create_single_env(seed=seed, record_video=(i < 2), video_filename=f"test_{seed}.mp4")
+                env = self.create_single_env(record_video=(i < 2), video_filename=f"test_{seed}.mp4")
             except Exception as e:
                 print(f"Error creating environment for random test: {e}")
                 results.append({
@@ -630,7 +630,7 @@ def main():
         
         # Test environment creation first
         print("\nTesting environment creation...")
-        temp_env = runner.create_single_env(seed=42, record_video=False)
+        temp_env = runner.create_single_env(record_video=False)
         print(f"Action space: {temp_env.action_space}")
         
         # Test environment reset
@@ -650,7 +650,7 @@ def main():
         
         # Test RandomPolicy creation
         print("\nTesting RandomPolicy creation...")
-        temp_env = runner.create_single_env(seed=42, record_video=False)
+        temp_env = runner.create_single_env(record_video=False)
         
         random_policy = RandomPolicy(
             action_space=temp_env.action_space,
