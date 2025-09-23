@@ -27,8 +27,8 @@ class StackCubeUR10EDataset(BaseImageDataset):
         
         super().__init__()
         # Use lazy loading - create_from_path opens zarr file directly without loading to memory
-        # self.replay_buffer = ReplayBuffer.copy_from_path(zarr_path, keys=['base_img', 'wrist_img', 'state', 'action'])
-        self.replay_buffer = ReplayBuffer.create_from_path(zarr_path)
+        self.replay_buffer = ReplayBuffer.copy_from_path(zarr_path, keys=['base_img', 'wrist_img', 'state', 'action'])
+        # self.replay_buffer = ReplayBuffer.create_from_path(zarr_path)
         
         # Verify that all required keys exist in the zarr file
         # required_keys = ['base_img', 'wrist_img', 'state', 'action']

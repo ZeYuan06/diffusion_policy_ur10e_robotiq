@@ -142,3 +142,6 @@ dmypy.json
 # test images
 test_images/
 env_checker.py
+
+
+lightning_logs/

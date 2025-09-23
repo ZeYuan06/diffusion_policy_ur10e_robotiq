@@ -1,0 +1,197 @@
+_target_: diffusion_policy.workspace.train_diffusion_unet_multigpu_workspace.TrainDiffusionUnetMultiGpuWorkspace
+checkpoint:
+  save_last_ckpt: true
+  save_last_snapshot: false
+  topk:
+    format_str: epoch={epoch:04d}.ckpt
+    k: 5
+    mode: max
+    monitor_key: val_loss
+dataloader:
+  batch_size: 64
+  num_workers: 8
+  persistent_workers: false
+  pin_memory: true
+  shuffle: true
+dataset_obs_steps: 2
+ema:
+  _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
+  inv_gamma: 1.0
+  max_value: 0.9999
+  min_value: 0.0
+  power: 0.75
+  update_after_step: 0
+exp_name: default
+horizon: 32
+keypoint_visible_rate: 1.0
+logging:
+  group: null
+  id: null
+  mode: online
+  name: train_diffusion_unet_hybrid_multi_camera_stackcube_ur10e_image
+  project: diffusion_policy_debug
+  resume: true
+  tags:
+  - train_diffusion_unet_hybrid_multi_camera
+  - stackcube_ur10e_image
+  - default
+multi_run:
+  run_dir: data/outputs/2023.01.16/20.20.06_train_diffusion_unet_hybrid_stackcube_ur10e_image
+  wandb_name_base: 2025.08_train_diffusion_multi_camera_stackcube_ur10e_image
+n_action_steps: 8
+n_latency_steps: 0
+n_obs_steps: 2
+name: train_diffusion_unet_hybrid_multi_camera
+obs_as_global_cond: true
+optimizer:
+  _target_: torch.optim.AdamW
+  betas:
+  - 0.95
+  - 0.999
+  eps: 1.0e-08
+  lr: 0.0001
+  weight_decay: 1.0e-06
+past_action_visible: false
+policy:
+  _target_: diffusion_policy.policy.diffusion_unet_multi_images_policy.DiffusionUnetHybridMultiImagePolicy
+  cond_predict_scale: true
+  crop_shape:
+  - 240
+  - 240
+  diffusion_step_embed_dim: 128
+  down_dims:
+  - 512
+  - 1024
+  - 2048
+  eval_fixed_crop: true
+  horizon: 32
+  kernel_size: 5
+  n_action_steps: 8
+  n_groups: 8
+  n_obs_steps: 2
+  noise_scheduler:
+    _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    beta_start: 0.0001
+    clip_sample: true
+    num_train_timesteps: 100
+    prediction_type: epsilon
+    variance_type: fixed_small
+  num_inference_steps: 100
+  obs_as_global_cond: true
+  obs_encoder_group_norm: true
+  shape_meta:
+    action:
+      shape:
+      - 7
+    obs:
+      agent_pos:
+        shape:
+        - 14
+        type: low_dim
+      base_image:
+        shape:
+        - 3
+        - 256
+        - 256
+        type: rgb
+      wrist_image:
+        shape:
+        - 3
+        - 256
+        - 256
+        type: rgb
+shape_meta:
+  action:
+    shape:
+    - 7
+  obs:
+    agent_pos:
+      shape:
+      - 14
+      type: low_dim
+    base_image:
+      shape:
+      - 3
+      - 256
+      - 256
+      type: base_rgb
+    wrist_rgb:
+      shape:
+      - 3
+      - 256
+      - 256
+      type: wrist_rgb
+task:
+  dataset:
+    _target_: diffusion_policy.dataset.multicamera_dataset.StackCubeUR10EDataset
+    horizon: 32
+    max_train_episodes: 90
+    pad_after: 7
+    pad_before: 1
+    seed: 42
+    val_ratio: 0.01
+    zarr_path: data/multi_obj.zarr
+    load_existing_val_mask: false
+  env_runner:
+    _target_: diffusion_policy.env_runner.stack_cube_image_runner.StackCubeImageRunner
+    max_steps: 400
+    n_action_steps: 8
+    env_id: StackCube-MultiCamera
+    # n_envs: null
+    n_obs_steps: 2
+    n_test: 2
+    n_test_vis: 4
+    n_train: 3
+    n_train_vis: 2
+    # past_action: false
+    test_start_seed: 100000
+    train_start_seed: 0
+  image_shape:
+  - 3
+  - 256
+  - 256
+  name: stack_cube_ur10e_image
+  shape_meta:
+    action:
+      shape:
+      - 7
+    obs:
+      agent_pos:
+        shape:
+        - 14
+        type: low_dim
+      image:
+        shape:
+        - 3
+        - 256
+        - 256
+        type: rgb
+task_name: stack_cube_ur10e_image
+training:
+  checkpoint_every: 5
+  debug: False
+  accelerator: gpu
+  strategy: ddp_find_unused_parameters_true
+  device: auto
+  precision: 16
+  gradient_accumulate_every: 1
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  max_train_steps: null
+  max_val_steps: null
+  num_epochs: 160
+  resume: true
+  rollout_every: 700
+  sample_every: 700
+  seed: 42
+  tqdm_interval_sec: 1.0
+  use_ema: true
+  val_every: 5
+val_dataloader:
+  batch_size: 32
+  num_workers: 16
+  persistent_workers: false
+  pin_memory: true
+  shuffle: false

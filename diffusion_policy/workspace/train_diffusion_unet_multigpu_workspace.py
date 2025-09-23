@@ -517,8 +517,8 @@ class DiffusionMultiGpuDataModule(pl.LightningDataModule):
         super().__init__()
         self.cfg = cfg
         self.output_dir = output_dir
+
         # Initialize all dataset attributes
-        self.full_dataset = None
         self.train_dataset = None
         self.val_dataset = None
         self.normalizer = None
@@ -528,69 +528,96 @@ class DiffusionMultiGpuDataModule(pl.LightningDataModule):
         print(f"Setting up data module for stage: {stage}")
         
         # Set up validation mask save path for consistent train/val splits
-        self._setup_validation_mask_path(stage=stage)
+        mask_params = self._setup_validation_mask_path(stage=stage)
         
         # Create the full dataset with validation mask configuration
-        self.full_dataset = hydra.utils.instantiate(self.cfg.task.dataset)
+        full_dataset = hydra.utils.instantiate(
+            self.cfg.task.dataset,
+            **mask_params
+        )
         
         if stage == "fit" or stage is None:
             # Training stage: setup training data and save validation split
-            self._setup_for_training()
+            self._setup_for_training(full_dataset)
         elif stage in ["validate", "test"]:
             # Evaluation stage: load saved validation split
-            self._setup_for_evaluation()
+            self._setup_for_evaluation(full_dataset)
         else:
             # Default: setup both datasets
-            self._setup_default()
+            self._setup_default(full_dataset)
             
     def _setup_validation_mask_path(self, stage=None):
-        """Configure validation mask save path in dataset config"""
-        if (self.output_dir and 
-            hasattr(self.cfg, 'task') and 
-            hasattr(self.cfg.task, 'dataset')):
+        """Configure validation mask save path safely for multi-process training"""
+        mask_params = {}
+        if not self.output_dir:
+            return mask_params
             
-            # Only set if not already configured
-            if not hasattr(self.cfg.task.dataset, 'val_mask_save_path') or self.cfg.task.dataset.val_mask_save_path is None:
-                val_mask_path = os.path.join(self.output_dir, 'val_mask.pkl')
-                self.cfg.task.dataset.val_mask_save_path = val_mask_path
-                if stage == 'fit':
-                    self.cfg.task.dataset.load_existing_val_mask = False
-                    print(f"Set validation mask save path to: {val_mask_path}")
-                elif stage in ['validate', 'test']:
-                    self.cfg.task.dataset.load_existing_val_mask = True
-                    print(f"Loading existing validation mask from: {val_mask_path}")
-                else:
-                    raise ValueError(f"Unknown stage: {stage}")
+        val_mask_path = os.path.join(self.output_dir, 'val_mask.pkl')
+        mask_params['val_mask_save_path'] = val_mask_path
+        
+        if stage == 'fit':
+            # Training stage: main process creates, others wait and load
+            if self._is_main_process():
+                mask_params['load_existing_val_mask'] = False
+                print(f"Main process creating new validation mask: {val_mask_path}")
+            else:
+                self._wait_for_validation_mask(val_mask_path)
+                mask_params['load_existing_val_mask'] = True
+                print(f"Worker process loading validation mask: {val_mask_path}")
+        elif stage in ['validate', 'test']:
+            # Evaluation stage: all processes load existing mask
+            mask_params['load_existing_val_mask'] = True
+            print(f"Loading existing validation mask: {val_mask_path}")
+        else:
+            raise ValueError(f"Unknown stage: {stage}")
+            
+        return mask_params
     
-    def _setup_for_training(self):
+    def _is_main_process(self):
+        """Check if this is the main process"""
+        return int(os.environ.get('LOCAL_RANK', 0)) == 0
+    
+    def _wait_for_validation_mask(self, val_mask_path, timeout=300):
+        """Wait for main process to create validation mask file"""
+        import time
+        
+        start_time = time.time()
+        while not os.path.exists(val_mask_path):
+            if time.time() - start_time > timeout:
+                raise TimeoutError(f"Timeout waiting for validation mask: {val_mask_path}")
+            
+            print("Waiting for main process to create validation mask...")
+            time.sleep(2)
+        
+        # Additional wait to ensure file write is complete
+        time.sleep(1)
+
+    def _setup_for_training(self, full_dataset):
         """Setup for training: use training data only, save validation split"""
         print("Setting up for training stage...")
         
         # Get training-only dataset (excludes validation episodes)
-        self.train_dataset = self.full_dataset.get_train_only_dataset()
+        self.train_dataset = full_dataset.get_train_only_dataset()
         # Also get validation dataset to save the split
-        self.val_dataset = self.full_dataset.get_validation_dataset()
-        
+        self.val_dataset = full_dataset.get_validation_dataset()
+
         # Compute normalizer from TRAINING DATA ONLY
         self.normalizer = self.train_dataset.get_normalizer(**self.cfg.task.dataset.get('normalizer', {}))
         
         # Save normalizer for evaluation stage
         self._save_normalizer()
         
-        # For compatibility with Lightning DataModule interface
-        self.dataset = self.train_dataset
-        
         print(f"Training setup complete:")
         print(f"  Training samples: {len(self.train_dataset)}")
         print(f"  Validation samples: {len(self.val_dataset)} (saved for evaluation)")
         print(f"  Normalizer computed from training data only")
         
-    def _setup_for_evaluation(self):
+    def _setup_for_evaluation(self, full_dataset):
         """Setup for evaluation: load saved validation split and normalizer"""
         print("Setting up for evaluation stage...")
         
         # Get validation dataset using saved validation mask
-        self.val_dataset = self.full_dataset.get_validation_dataset()
+        self.val_dataset = full_dataset.get_validation_dataset()
         
         # Try to load saved normalizer first
         if self._load_saved_normalizer():
@@ -598,24 +625,20 @@ class DiffusionMultiGpuDataModule(pl.LightningDataModule):
         else:
             print("Warning: No saved normalizer found, computing from training data")
             # Fallback: compute from training data
-            train_dataset = self.full_dataset.get_train_only_dataset()
+            train_dataset = full_dataset.get_train_only_dataset()
             self.normalizer = train_dataset.get_normalizer(**self.cfg.task.dataset.get('normalizer', {}))
-        
-        # For compatibility
-        self.dataset = self.val_dataset
         
         print(f"Evaluation setup complete:")
         print(f"  Validation samples: {len(self.val_dataset)}")
         print(f"  Using saved normalizer for consistency")
-        
-    def _setup_default(self):
+
+    def _setup_default(self, full_dataset):
         """Default setup: create both datasets"""
         print("Setting up default configuration...")
-        
-        self.train_dataset = self.full_dataset.get_train_only_dataset()
-        self.val_dataset = self.full_dataset.get_validation_dataset()
+
+        self.train_dataset = full_dataset.get_train_only_dataset()
+        self.val_dataset = full_dataset.get_validation_dataset()
         self.normalizer = self.train_dataset.get_normalizer(**self.cfg.task.dataset.get('normalizer', {}))
-        self.dataset = self.train_dataset
         
         print(f"Default setup complete:")
         print(f"  Training samples: {len(self.train_dataset)}")
@@ -657,19 +680,15 @@ class DiffusionMultiGpuDataModule(pl.LightningDataModule):
         
     def train_dataloader(self):
         """Return training dataloader"""
-        if self.train_dataset is not None:
-            return DataLoader(self.train_dataset, **self.cfg.dataloader)
-        elif self.dataset is not None:
-            return DataLoader(self.dataset, **self.cfg.dataloader)
-        else:
+        if self.train_dataset is None:
             raise RuntimeError("No training dataset available. Call setup('fit') first.")
+        return DataLoader(self.train_dataset, **self.cfg.dataloader)
     
     def val_dataloader(self):
         """Return validation dataloader"""
-        if self.val_dataset is not None:
-            return DataLoader(self.val_dataset, **self.cfg.val_dataloader)
-        else:
-            raise RuntimeError("No validation dataset available. Call setup() first.")
+        if self.val_dataset is None:
+            raise RuntimeError("No validation dataset available. Call setup('fit') first.")
+        return DataLoader(self.val_dataset, **self.cfg.val_dataloader)
 
 class TrainDiffusionUnetMultiGpuWorkspace(BaseWorkspace):
     include_keys = ['global_step', 'epoch']
@@ -744,7 +763,7 @@ class TrainDiffusionUnetMultiGpuWorkspace(BaseWorkspace):
 
         # create data module with output_dir for validation mask saving
         data_module = DiffusionMultiGpuDataModule(cfg, output_dir=self.output_dir)
-        data_module.setup()
+        data_module.setup(stage='fit')
         
         # create lightning model
         lightning_model = self.lightning_model

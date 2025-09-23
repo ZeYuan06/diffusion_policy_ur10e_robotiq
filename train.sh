@@ -1,7 +1,7 @@
 #!/bin/bash
 
 export HYDRA_FULL_ERROR=1
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=5,6
 
 LOG_DIR="logs"
 mkdir -p ${LOG_DIR}
@@ -10,7 +10,7 @@ LOG_FILE="${LOG_DIR}/train_$(date +'%Y%m%d_%H%M%S').log"
 
 nohup python train.py \
   --config-dir=configs \
-  --config-name=multigpu.yaml \
+  --config-name=multiobj.yaml \
   training.seed=42 \
   hydra.run.dir="data/outputs/\${now:%Y.%m.%d}/\${now:%H.%M.%S}_\${name}_\${task_name}" \
   > "${LOG_FILE}" 2>&1 &
