@@ -10,7 +10,7 @@ checkpoint:
 dataloader:
   batch_size: 64
   num_workers: 8
-  persistent_workers: false
+  persistent_workers: true
   pin_memory: true
   shuffle: true
 dataset_obs_steps: 2
@@ -33,11 +33,11 @@ logging:
   resume: true
   tags:
   - train_diffusion_unet_hybrid_multi_camera
-  - stackcube_ur10e_image
+  - pick_multi_objects
   - default
 multi_run:
   run_dir: data/outputs/2023.01.16/20.20.06_train_diffusion_unet_hybrid_stackcube_ur10e_image
-  wandb_name_base: 2025.08_train_diffusion_multi_camera_stackcube_ur10e_image
+  wandb_name_base: 2025.08_train_diffusion_multi_camera_obj_ur10e_image
 n_action_steps: 8
 n_latency_steps: 0
 n_obs_steps: 2
@@ -132,22 +132,17 @@ task:
     pad_before: 1
     seed: 42
     val_ratio: 0.01
-    zarr_path: data/multi_obj.zarr
+    zarr_path: data/multiobj_data.zarr
     load_existing_val_mask: false
   env_runner:
     _target_: diffusion_policy.env_runner.stack_cube_image_runner.StackCubeImageRunner
     max_steps: 400
     n_action_steps: 8
-    env_id: StackCube-MultiCamera
-    # n_envs: null
+    env_id: PickBox-v1
     n_obs_steps: 2
-    n_test: 2
+    n_test: 4
     n_test_vis: 4
-    n_train: 3
-    n_train_vis: 2
-    # past_action: false
     test_start_seed: 100000
-    train_start_seed: 0
   image_shape:
   - 3
   - 256
@@ -190,8 +185,8 @@ training:
   use_ema: true
   val_every: 5
 val_dataloader:
-  batch_size: 32
-  num_workers: 16
+  batch_size: 64
+  num_workers: 4
   persistent_workers: false
   pin_memory: true
   shuffle: false

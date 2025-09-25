@@ -84,12 +84,12 @@ class UR10eRobotiq(BaseAgent):
         grip_active = PDJointPosMimicControllerConfig(
             joint_names=self.gripper_joint_names,
             lower=0, upper=0.81,
-            stiffness=1e5, damping=2000, force_limit=0.1, normalize_action=False
+            stiffness=1e3, damping=2000, force_limit=0.1, normalize_action=False
         )
         grip_active_delta = PDJointPosMimicControllerConfig(
             joint_names=self.gripper_joint_names,
             lower=-0.15, upper=0.15,
-            stiffness=1e5, damping=2000, force_limit=0.1,
+            stiffness=1e3, damping=2000, force_limit=0.1,
             normalize_action=True, use_delta=True
         )
 

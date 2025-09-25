@@ -24,6 +24,7 @@ from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 
 from .stack_cube_env import StackCubeEnv
 from .stack_cube_multicamera_env import StackCubeMultiCameraEnv
+from .pick_box_env import PickBoxEnv
 
 import mani_skill.envs
 from .robotiq_ur10e.ur10e_robotiq import UR10eRobotiq
@@ -36,11 +37,8 @@ class StackCubeImageRunner(BaseImageRunner):
                  env_id="StackCube-Customized", 
                  control_mode="pd_joint_pos", 
                  render_mode="rgb_array",
-                 n_train=10,
-                 n_train_vis=3,
-                 train_start_seed=0,
-                 n_test=22,
-                 n_test_vis=6,
+                 n_test=5,
+                 n_test_vis=5,
                  test_start_seed=10000,
                  max_steps=200,
                  n_obs_steps=8,
@@ -54,9 +52,6 @@ class StackCubeImageRunner(BaseImageRunner):
             env_id: Environment ID
             control_mode: Control mode
             render_mode: Render mode
-            n_train: Number of training episodes
-            n_train_vis: Number of training episodes to record
-            train_start_seed: Starting seed for training
             n_test: Number of test episodes
             n_test_vis: Number of test episodes to record
             test_start_seed: Starting seed for testing
@@ -71,9 +66,6 @@ class StackCubeImageRunner(BaseImageRunner):
         self.env_id = env_id
         self.control_mode = control_mode
         self.render_mode = render_mode
-        self.n_train = n_train
-        self.n_train_vis = n_train_vis
-        self.train_start_seed = train_start_seed
         self.n_test = n_test
         self.n_test_vis = n_test_vis
         self.test_start_seed = test_start_seed
@@ -87,11 +79,6 @@ class StackCubeImageRunner(BaseImageRunner):
         self.env_prefixs = []
         
         # Setup seeds and prefixes
-        for i in range(n_train):
-            seed = train_start_seed + i
-            self.env_seeds.append(seed)
-            self.env_prefixs.append('train/')
-            
         for i in range(n_test):
             seed = test_start_seed + i
             self.env_seeds.append(seed)
@@ -135,8 +122,8 @@ class StackCubeImageRunner(BaseImageRunner):
             )
         
         return env
-    
-    def run(self, policy: BaseImagePolicy):
+
+    def run(self, policy: BaseImagePolicy, current_step=None) -> Dict:
         """
         Run policy evaluation similar to pusht_image_runner
         
@@ -151,7 +138,6 @@ class StackCubeImageRunner(BaseImageRunner):
         
         # Allocate data storage
         n_inits = len(self.env_seeds)
-        all_video_paths: List[Optional[str]] = [None] * n_inits
         all_rewards = [0.0] * n_inits
         
         # Run evaluation for each seed
@@ -160,12 +146,8 @@ class StackCubeImageRunner(BaseImageRunner):
             prefix = self.env_prefixs[i]
             
             # Determine if we should record video
-            if prefix == 'train/':
-                episode_idx = i
-                record_video = episode_idx < self.n_train_vis
-            else:  # test
-                episode_idx = i - self.n_train
-                record_video = episode_idx < self.n_test_vis
+            episode_idx = i
+            record_video = episode_idx < self.n_test_vis
             
             print(f"Running {prefix}episode {episode_idx + 1} (seed={seed})")
             
@@ -177,7 +159,6 @@ class StackCubeImageRunner(BaseImageRunner):
                 import traceback
                 traceback.print_exc()
                 all_rewards[i] = 0.0
-                all_video_paths[i] = None
                 continue
             
             try:
@@ -419,61 +400,38 @@ class StackCubeImageRunner(BaseImageRunner):
                 
                 # Immediately upload video to wandb after episode completion
                 if record_video:
-                    try:
-                        video_dir = self.output_dir / "media"
-                        # Find the most recently generated video file
-                        video_files = list(video_dir.glob("*.mp4"))
-                        if video_files:
-                            # Sort by modification time and get the latest one
-                            latest_video = max(video_files, key=lambda x: x.stat().st_mtime)
-                            video_path = str(latest_video)
-                            print(f"Found video file: {latest_video}")
+                    video_dir = self.output_dir / "media"
+                    # Find the most recently generated video file
+                    video_files = list(video_dir.glob("*.mp4"))
+                    if video_files:
+                        # Sort by modification time and get the latest one
+                        latest_video = max(video_files, key=lambda x: x.stat().st_mtime)
+                        video_path = str(latest_video)
+                        print(f"Found video file: {latest_video}")
+                        
+                        # Immediately upload to wandb to prevent overwriting
+                        video_file = pathlib.Path(video_path)
+                        if video_file.exists() and video_file.stat().st_size > 0:
+                            print(f"Video found: {video_path} (size: {video_file.stat().st_size} bytes)")
                             
-                            # Immediately upload to wandb to prevent overwriting
-                            try:
-                                video_file = pathlib.Path(video_path)
-                                if video_file.exists() and video_file.stat().st_size > 0:
-                                    print(f"Video found: {video_path} (size: {video_file.stat().st_size} bytes)")
-                                    
-                                    # Check if wandb is initialized before uploading
-                                    if wandb.run is not None:
-                                        print(f"Uploading video to wandb: {video_path}")
-                                        sim_video = wandb.Video(str(video_file))
-                                        
-                                        # Log immediately with episode-specific key
-                                        episode_log_data = {
-                                            prefix + f'sim_video_{seed}': sim_video,
-                                            prefix + f'sim_max_reward_{seed}': total_reward
-                                        }
-                                        wandb.log(episode_log_data)
-                                        print(f"Video and reward logged to wandb: {prefix}sim_video_{seed}")
-                                    else:
-                                        print("wandb not initialized, skipping video upload")
-                                    
-                                    all_video_paths[i] = video_path  # Store for reference
-                                else:
-                                    print(f"Video file is empty or doesn't exist: {video_path}")
-                                    all_video_paths[i] = None
-                            except Exception as e:
-                                print(f"Error processing video: {e}")
-                                import traceback
-                                traceback.print_exc()
-                                all_video_paths[i] = video_path  # Store path even if upload failed
+                            # Check if wandb is initialized before uploading
+                            if wandb.run is not None:
+                                print(f"Uploading video to wandb: {video_path}")
+                                sim_video = wandb.Video(str(video_file))
+                                wandb.log({prefix + f'sim_video_{seed}': sim_video}, step=current_step)
+                                print(f"Video and reward logged to wandb: {prefix}sim_video_{seed}")
+                            else:
+                                print("wandb not initialized, skipping video upload")
                         else:
-                            print(f"No video files found in {video_dir}")
-                            all_video_paths[i] = None
-                    except Exception as e:
-                        print(f"Error processing video: {e}")
-                        all_video_paths[i] = None
-                else:
-                    all_video_paths[i] = None
+                            print(f"Video file is empty or doesn't exist: {video_path}")
+                    else:
+                        print(f"No video files found in {video_dir}")
                 
                 print(f"Episode completed: reward={total_reward:.3f}, steps={step_count}")
                 
             except Exception as e:
                 print(f"Error in episode {i}: {e}")
                 all_rewards[i] = 0.0
-                all_video_paths[i] = None
             finally:
                 try:
                     env.close()
@@ -520,7 +478,7 @@ class StackCubeImageRunner(BaseImageRunner):
         results = []
         
         for i in range(n_episodes):
-            seed = self.train_start_seed + i
+            seed = self.test_start_seed + i
             print(f"Running random test episode {i+1}/{n_episodes} (seed={seed})")
             
             # Create environment
@@ -610,103 +568,3 @@ class StackCubeImageRunner(BaseImageRunner):
             'avg_reward': avg_reward,
             'avg_steps': avg_steps
         }
-
-
-def main():
-    """Main function - demonstration usage"""
-    print("=== UR10e + Robotiq PickCube Image Runner ===")
-    
-    # Create runner
-    output_dir = "./evaluation_results"
-    
-    try:
-        runner = PickCubeImageRunner(
-            output_dir=output_dir,
-            n_train=10,
-            n_train_vis=3,
-            n_test=22,
-            n_test_vis=6
-        )
-        
-        # Test environment creation first
-        print("\nTesting environment creation...")
-        temp_env = runner.create_single_env(record_video=False)
-        print(f"Action space: {temp_env.action_space}")
-        
-        # Test environment reset
-        obs, info = temp_env.reset(seed=42)
-        print(f"Observation type: {type(obs)}")
-        
-        # Test a single step
-        action = temp_env.action_space.sample()
-        obs, reward, terminated, truncated, info = temp_env.step(action)
-        print("Environment step successful")
-        
-        temp_env.close()
-        
-        # Test with random actions
-        print("\nTesting random actions...")
-        test_results = runner.test_random_actions(n_episodes=3, debug=True)
-        
-        # Test RandomPolicy creation
-        print("\nTesting RandomPolicy creation...")
-        temp_env = runner.create_single_env(record_video=False)
-        
-        random_policy = RandomPolicy(
-            action_space=temp_env.action_space,
-            shape_meta={'action': {'shape': temp_env.action_space.shape}},
-            device='cpu',
-            dtype=torch.float32
-        )
-        
-        temp_env.close()
-        
-        # Test policy interface with dummy observations
-        print("\nTesting policy interface...")
-        batch_size = 1
-        dummy_obs = {
-            'image': torch.randn(batch_size, 8, 3, 96, 96, device=random_policy.device, dtype=random_policy.dtype),
-            'agent_pos': torch.randn(batch_size, 8, 2, device=random_policy.device, dtype=random_policy.dtype)
-        }
-        
-        with torch.no_grad():
-            action_dict = random_policy.predict_action(dummy_obs)
-        print(f"Action shape: {action_dict['action'].shape}")
-        
-        # Test policy evaluation
-        print("\nTesting policy evaluation...")
-        
-        # Create smaller test configuration
-        runner.n_train = 2
-        runner.n_test = 2
-        runner.env_seeds = []
-        runner.env_prefixs = []
-        
-        # Setup seeds and prefixes for reduced episodes
-        for i in range(2):
-            seed = runner.train_start_seed + i
-            runner.env_seeds.append(seed)
-            runner.env_prefixs.append('train/')
-            
-        for i in range(2):
-            seed = runner.test_start_seed + i
-            runner.env_seeds.append(seed)
-            runner.env_prefixs.append('test/')
-        
-        results = runner.run(random_policy)
-        
-        print(f"\n=== Final Results ===")
-        print(f"Output directory: {output_dir}")
-        print(f"Training mean score: {results.get('train/mean_score', 0.0):.3f}")
-        print(f"Testing mean score: {results.get('test/mean_score', 0.0):.3f}")
-        
-        print("All tests completed successfully!")
-        
-    except Exception as e:
-        print(f"Error in main: {e}")
-        import traceback
-        traceback.print_exc()
-
-
-if __name__ == "__main__":
-    main()

@@ -1,7 +1,10 @@
 #!/bin/bash
 
 export HYDRA_FULL_ERROR=1
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=6
+
+CONFIG_PATH="configs/multiobj.yaml"
+CHECKPOINT_DIR="data/outputs/2025.09.24/15.38.36_train_diffusion_unet_hybrid_multi_camera_stack_cube_ur10e_image"
 
 LOG_DIR="logs"
 mkdir -p ${LOG_DIR}
@@ -9,8 +12,8 @@ mkdir -p ${LOG_DIR}
 LOG_FILE="${LOG_DIR}/test_$(date +'%Y%m%d_%H%M%S').log"
 
 nohup python evaluate_all_checkpoints.py \
-    --config "configs/multigpu.yaml" \
-    --checkpoint_dir "data/outputs/2025.09.18/17.36.30_train_diffusion_unet_hybrid_multi_camera_stack_cube_ur10e_image" \
+    --config "${CONFIG_PATH}" \
+    --checkpoint_dir "${CHECKPOINT_DIR}" \
     > "${LOG_FILE}" 2>&1 &
 
 TEST_PID=$!
@@ -21,7 +24,7 @@ echo "Testing started at: $(date)" >> "${LOG_FILE}"
 echo "Testing PID: $TEST_PID" >> "${LOG_FILE}"
 echo "Log file: $LOG_FILE" >> "${LOG_FILE}"
 echo "CUDA devices: $CUDA_VISIBLE_DEVICES" >> "${LOG_FILE}"
-echo "Checkpoint directory: data/outputs/2025.09.18/17.36.30_train_diffusion_unet_hybrid_multi_camera_stack_cube_ur10e_image" >> "${LOG_FILE}"
+echo "Checkpoint directory: ${CHECKPOINT_DIR}" >> "${LOG_FILE}"
 echo "=================================================================" >> "${LOG_FILE}"
 echo "" >> "${LOG_FILE}"
 

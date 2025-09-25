@@ -126,7 +126,7 @@ class OriginalWorkspaceCheckpointCallback(pl.Callback):
         """Check if we should run diffusion sampling this epoch"""
         return ((current_epoch + 1) % cfg.training.sample_every) == 0
     
-    def _run_environment_rollout(self, pl_module, policy, current_epoch):
+    def _run_environment_rollout(self, pl_module, policy, current_epoch, current_step=None):
         """Run environment rollout and return logged metrics"""
         step_log = {}
         
@@ -137,14 +137,14 @@ class OriginalWorkspaceCheckpointCallback(pl.Callback):
             policy.eval()
 
             with torch.no_grad():
-                runner_log = pl_module.env_runner.run(policy)
+                runner_log = pl_module.env_runner.run(policy, current_step=current_step)
                 step_log.update(runner_log)
 
             policy.train(was_training)
             
             # Log to wandb
             for key, value in runner_log.items():
-                pl_module.log(f'env/{key}', value, on_epoch=True)
+                pl_module.log(f'env/{key}', value, step=current_epoch if current_epoch else 0, sync_dist=True)
         else:
             print("Warning: env_runner is not set, skipping environment evaluation.")
         
@@ -397,15 +397,16 @@ class DiffusionPolicyMultiGpuLightningModule(pl.LightningModule):
             self.cfg.optimizer,
             params=self.model.parameters()
         )        # calculate training steps
+                        
         try:
-            train_dataloader_len = len(self.trainer.datamodule.train_dataloader())
+            num_training_steps = int(self.trainer.estimated_stepping_batches)
         except Exception:
-            raise ValueError("Please set `dataloader_len` in the config if the dataset does not support __len__.")
-            
-            
-        num_training_steps = (
-            train_dataloader_len * self.cfg.training.num_epochs
-        ) // self.cfg.training.gradient_accumulate_every
+            print("Warning: `trainer.estimated_stepping_batches` not available. Falling back to manual calculation.")
+            world_size = self.trainer.world_size if self.trainer.world_size > 0 else 1
+            train_dataloader_len = len(self.trainer.datamodule.train_dataloader())
+            num_training_steps = (
+                train_dataloader_len * self.cfg.training.num_epochs
+            ) // (self.cfg.training.gradient_accumulate_every * world_size)
         
         lr_scheduler = get_scheduler(
             self.cfg.training.lr_scheduler,
@@ -415,14 +416,11 @@ class DiffusionPolicyMultiGpuLightningModule(pl.LightningModule):
             last_epoch=-1
         )
         
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
+        return [optimizer], [{
                 "scheduler": lr_scheduler,
                 "interval": "step",  # update every step
                 "frequency": 1,
-            }
-        }
+            }]
     
     def training_step(self, batch, batch_idx):
         # Ensure the model is already configured
@@ -558,8 +556,12 @@ class DiffusionMultiGpuDataModule(pl.LightningDataModule):
         if stage == 'fit':
             # Training stage: main process creates, others wait and load
             if self._is_main_process():
-                mask_params['load_existing_val_mask'] = False
-                print(f"Main process creating new validation mask: {val_mask_path}")
+                if os.path.exists(val_mask_path):
+                    mask_params['load_existing_val_mask'] = True
+                    print(f"Main process loading existing validation mask: {val_mask_path}")
+                else:
+                    mask_params['load_existing_val_mask'] = False
+                    print(f"Main process creating new validation mask: {val_mask_path}")
             else:
                 self._wait_for_validation_mask(val_mask_path)
                 mask_params['load_existing_val_mask'] = True

@@ -50,6 +50,7 @@ class CheckpointEvaluationCallback(OriginalWorkspaceCheckpointCallback):
             
         cfg = self.workspace.cfg
         current_epoch = self.epoch_info.get('epoch', 0)
+        current_step = self.epoch_info.get('global_step', 0)
         
         print(f"Evaluating checkpoint: {os.path.basename(self.checkpoint_path)} (epoch {current_epoch})")
         
@@ -62,11 +63,11 @@ class CheckpointEvaluationCallback(OriginalWorkspaceCheckpointCallback):
         
         # 1. Force run environment rollout
         print("  Running environment rollout...")
-        step_log.update(self._run_environment_rollout(pl_module, policy, current_epoch))
+        step_log.update(self._run_environment_rollout(pl_module, policy, current_epoch, current_step=current_step))
         
-        # 2. Force run diffusion sampling
-        print("  Running diffusion sampling...")
-        step_log.update(self._run_diffusion_sampling(pl_module, policy, current_epoch))
+        # # 2. Force run diffusion sampling
+        # print("  Running diffusion sampling...")
+        # step_log.update(self._run_diffusion_sampling(pl_module, policy, current_epoch))
         
         policy.train()
         
@@ -212,7 +213,7 @@ def evaluate_single_checkpoint(workspace, data_module, ckpt_path, wandb_logger, 
         }
         
         # Set up JSON logger
-        if not hasattr(lightning_model, 'json_logger') or lightning_model.json_logger is None:
+        if not hasattr(lightning_model, 'json_logger') or lightning_model.json_logger is None or lightning_model.json_logger.file is None:
             from diffusion_policy.common.json_logger import JsonLogger
             log_path = os.path.join(workspace.output_dir, f'eval_logs_{os.path.basename(ckpt_path)}.json.txt')
             lightning_model.json_logger = JsonLogger(log_path)
@@ -222,6 +223,7 @@ def evaluate_single_checkpoint(workspace, data_module, ckpt_path, wandb_logger, 
         trainer.validate(
             model=lightning_model,
             datamodule=data_module,
+            ckpt_path=None,  # Already loaded
             verbose=False
         )
         
@@ -239,14 +241,11 @@ def evaluate_single_checkpoint(workspace, data_module, ckpt_path, wandb_logger, 
                     'eval_validation/val_loss': val_loss,
                     'eval_epoch': epoch_info['epoch'],
                     'eval_checkpoint': os.path.basename(ckpt_path)
-                }, step=epoch_info['epoch'] if epoch_info['epoch'] >= 0 else None)
+                }, step=epoch_info['global_step'] if epoch_info['global_step'] >= 0 else None)
         
         # Close JSON logger
         if hasattr(lightning_model, 'json_logger') and lightning_model.json_logger:
-            try:
-                lightning_model.json_logger.stop()
-            except:
-                pass  # Ignore errors when closing logger
+            lightning_model.json_logger.stop()
         
         print(f"Results for {os.path.basename(ckpt_path)}:")
         for key, value in results.items():
@@ -312,7 +311,7 @@ def evaluate_all_checkpoints(config_path, checkpoint_dir, output_csv, use_wandb=
             'eval_meta/evaluation_start': datetime.now().isoformat(),
             'eval_meta/config_path': config_path,
             'eval_meta/checkpoint_dir': checkpoint_dir
-        })
+        }, step=0)
     
     results = []
     
@@ -332,11 +331,11 @@ def evaluate_all_checkpoints(config_path, checkpoint_dir, output_csv, use_wandb=
             df_temp.to_csv(temp_csv, index=False)
             
             # Log progress to wandb
-            if use_wandb and wandb_logger and hasattr(wandb_logger, 'experiment'):
-                wandb_logger.experiment.log({
-                    'eval_meta/progress': (i + 1) / len(checkpoint_files),
-                    'eval_meta/completed_evaluations': len(results)
-                })
+            # if use_wandb and wandb_logger and hasattr(wandb_logger, 'experiment'):
+            #     wandb_logger.experiment.log({
+            #         'eval_meta/progress': (i + 1) / len(checkpoint_files),
+            #         'eval_meta/completed_evaluations': len(results)
+            #     })
     
     # Save final results
     if results:
@@ -381,7 +380,7 @@ def evaluate_all_checkpoints(config_path, checkpoint_dir, output_csv, use_wandb=
                     })
             
             # Log summary and create table
-            wandb_logger.experiment.log(summary_data)
+            wandb_logger.experiment.log(summary_data, step=0)
             
             # Create results table
             import wandb
@@ -432,7 +431,7 @@ def evaluate_all_checkpoints(config_path, checkpoint_dir, output_csv, use_wandb=
             wandb_logger.experiment.log({
                 'eval_meta/evaluation_end': datetime.now().isoformat(),
                 'eval_meta/successful_evaluations': len(results)
-            })
+            }, step=0)
             
             print(f"\nAll results logged to wandb: {wandb_logger.experiment.url}")
     

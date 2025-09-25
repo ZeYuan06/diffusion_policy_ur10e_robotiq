@@ -145,3 +145,7 @@ env_checker.py
 
 
 lightning_logs/
+
+
+assets/
+*.npz
