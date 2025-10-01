@@ -70,9 +70,10 @@ class UR10eRobotiq(BaseAgent):
         )
         arm_pd_delta = PDJointPosControllerConfig(
             self.arm_joint_names,
-            lower=-0.1, upper=0.1,
+            lower=-0.5, upper=0.5,
             stiffness=1e4, damping=1e3,
-            normalize_action=True, use_delta=True
+            # normalize_action=True,
+            use_delta=True
         )
 
         # Gripper PD controllers (mimic outer knuckles)
@@ -86,12 +87,12 @@ class UR10eRobotiq(BaseAgent):
             lower=0, upper=0.81,
             stiffness=1e3, damping=2000, force_limit=0.1, normalize_action=False
         )
-        grip_active_delta = PDJointPosMimicControllerConfig(
-            joint_names=self.gripper_joint_names,
-            lower=-0.15, upper=0.15,
-            stiffness=1e3, damping=2000, force_limit=0.1,
-            normalize_action=True, use_delta=True
-        )
+        # grip_active_delta = PDJointPosMimicControllerConfig(
+        #     joint_names=self.gripper_joint_names,
+        #     lower=0, upper=0.81,
+        #     stiffness=1e3, damping=2000, force_limit=0.1,
+        #     normalize_action=True, use_delta=False
+        # )
 
         return deepcopy(dict(
             pd_joint_pos=dict(
@@ -101,7 +102,7 @@ class UR10eRobotiq(BaseAgent):
             ),
             pd_joint_delta_pos=dict(
                 arm=arm_pd_delta,
-                gripper_active=grip_active_delta,
+                gripper_active=grip_active, #grip_active_delta,
                 gripper_passive=passive,
             ),
         ))

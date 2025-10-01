@@ -35,7 +35,7 @@ class StackCubeImageRunner(BaseImageRunner):
     def __init__(self, 
                  output_dir,
                  env_id="StackCube-Customized", 
-                 control_mode="pd_joint_pos", 
+                 control_mode="pd_joint_delta_pos", 
                  render_mode="rgb_array",
                  n_test=5,
                  n_test_vis=5,
@@ -167,10 +167,10 @@ class StackCubeImageRunner(BaseImageRunner):
                 policy.reset()
                 
                 # Convert ManiSkill obs to policy-expected format
-                def process_obs(raw_obs):
+                def process_obs(raw_obs, env):
                     """Convert ManiSkill observation to policy format"""
                     processed_obs = {}
-                    
+
                     # Extract image from sensor_data
                     if 'sensor_data' in raw_obs and 'render_camera' in raw_obs['sensor_data']:
                         # ManiSkill returns RGB image, handle different dimensions
@@ -204,68 +204,25 @@ class StackCubeImageRunner(BaseImageRunner):
                                 print(f"Unexpected image shape: {rgb_image.shape}")
                                 # continue
                             processed_obs['wrist_image'] = rgb_image.cpu().numpy()
-                        
-                    # Extract agent_pos - 14D state vector
-                    # Composition: joint_positions(6D) + ee_pos_quat(7D) + gripper_position(1D)
-                    agent_pos_vector = []
-                    
-                    # 1. Joint positions (6D) - extract from first 6 elements of qpos
-                    if 'agent' in raw_obs and 'qpos' in raw_obs['agent']:
-                        qpos = raw_obs['agent']['qpos']
-                        if isinstance(qpos, torch.Tensor):
-                            joint_positions = qpos.flatten().cpu().numpy()[:6]
-                            agent_pos_vector.extend(joint_positions)
-                    
-                    # 2. End-effector pose (7D) - TCP position and orientation
-                    if 'extra' in raw_obs and 'tcp_pose' in raw_obs['extra']:
-                        tcp_pose = raw_obs['extra']['tcp_pose']
-                        if isinstance(tcp_pose, torch.Tensor):
-                            ee_pos_quat = tcp_pose.flatten().cpu().numpy()
-                            agent_pos_vector.extend(ee_pos_quat)
-                    
-                    # 3. Gripper position (1D) - extract 7th element from qpos
-                    if 'agent' in raw_obs and 'qpos' in raw_obs['agent']:
-                        qpos = raw_obs['agent']['qpos']
-                        if isinstance(qpos, torch.Tensor):
-                            gripper_position = qpos.flatten().cpu().numpy()[6:7]
-                            agent_pos_vector.extend(gripper_position)
-                    
-                    # Ensure exactly 14 dimensions
-                    if len(agent_pos_vector) == 14:
-                        processed_obs['agent_pos'] = np.array(agent_pos_vector, dtype=np.float32)
-                    else:
-                        print(f"Warning: agent_pos dimension mismatch, expected 14, got {len(agent_pos_vector)}")
-                        exit()
-                    # If no specific mappings found, include all relevant state info
-                    state_vector = []
-                    
-                    # Add agent joint positions
-                    if 'agent' in raw_obs and 'qpos' in raw_obs['agent']:
-                        qpos = raw_obs['agent']['qpos']
-                        if isinstance(qpos, torch.Tensor):
-                            state_vector.extend(qpos.flatten().cpu().numpy())
-                    
-                    # Add TCP pose
-                    if 'extra' in raw_obs and 'tcp_pose' in raw_obs['extra']:
-                        tcp_pose = raw_obs['extra']['tcp_pose']
-                        if isinstance(tcp_pose, torch.Tensor):
-                            state_vector.extend(tcp_pose.flatten().cpu().numpy())
-                    
-                    # Add object and goal positions
-                    if 'extra' in raw_obs:
-                        for key in ['obj_pose', 'goal_pos', 'tcp_to_obj_pos', 'obj_to_goal_pos']:
-                            if key in raw_obs['extra']:
-                                val = raw_obs['extra'][key]
-                                if isinstance(val, torch.Tensor):
-                                    state_vector.extend(val.flatten().cpu().numpy())
-                    
-                    if state_vector:
-                        processed_obs['state'] = np.array(state_vector)
-                    
+
+                    env = env.unwrapped
+                    robot = env.agent.robot
+                    joint_positions = robot.get_qpos().cpu().numpy()[0, :6]
+
+                    tcp_pose = env.agent.tcp.pose
+                    tcp_pos = tcp_pose.p.cpu().numpy()[0]
+                    tcp_quat = tcp_pose.q.cpu().numpy()[0]
+                    ee_pos_quat = np.concatenate([tcp_pos, tcp_quat])
+
+                    gripper_pos = env.unwrapped.agent.gripper_qpos
+                    gripper_position = np.array([gripper_pos])
+
+                    processed_obs['agent_pos'] = np.concatenate([joint_positions, ee_pos_quat, gripper_position], axis=0).astype(np.float32)
+
                     return processed_obs
-                
-                obs = process_obs(obs)
-                
+
+                obs = process_obs(obs, env)
+
                 # Get observation shape and create observation history
                 obs_deque = collections.deque(maxlen=self.n_obs_steps)
                 
@@ -360,28 +317,20 @@ class StackCubeImageRunner(BaseImageRunner):
                                 break
                                 
                             action = action_sequence[action_idx]
+
+                            obs, reward, terminated, truncated, info = env.step(action)
+                            done = terminated or truncated
+                            episode_rewards.append(float(reward))
+                            episode_dones.append(done)
                             
-                            try:
-                                obs, reward, terminated, truncated, info = env.step(action)
-                                done = terminated or truncated
-                                episode_rewards.append(float(reward))
-                                episode_dones.append(done)
-                                
-                                # Process new observation and update history
-                                processed_obs = process_obs(obs)
-                                obs_deque.append(processed_obs)
-                                
-                                step_count += 1
-                                pbar.update(1)
-                                
-                                if done:
-                                    break
-                                    
-                            except Exception as e:
-                                print(f"Error executing action {action_idx} at step {step_count}: {e}")
-                                import traceback
-                                traceback.print_exc()
-                                done = True
+                            # Process new observation and update history
+                            processed_obs = process_obs(obs, env)
+                            obs_deque.append(processed_obs)
+                            
+                            step_count += 1
+                            pbar.update(1)
+                            
+                            if done:
                                 break
                         
                         # Aggregate rewards (similar to MultiStepWrapper reward aggregation)

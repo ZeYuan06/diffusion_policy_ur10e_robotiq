@@ -287,7 +287,7 @@ def evaluate_all_checkpoints(config_path, checkpoint_dir, output_csv, use_wandb=
     wandb_logger = None
     if use_wandb:
         try:
-            wandb_logger = setup_wandb_logger_for_evaluation(cfg, checkpoint_dir)   # FIXME: Please complete the resume logic
+            wandb_logger = setup_wandb_logger_for_evaluation(cfg, checkpoint_dir)
             print(f"Wandb logging enabled: {wandb_logger.experiment.url}")
         except Exception as e:
             print(f"Failed to setup wandb: {e}")
@@ -457,17 +457,15 @@ def main():
         return
     
     # Ensure output directory exists
-    output_dir = os.path.join(args.checkpoint_dir, args.output)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
+    output = os.path.join(args.checkpoint_dir, args.output)
     
     print(f"Configuration: {args.config}")
     print(f"Checkpoint directory: {args.checkpoint_dir}")
-    print(f"Output file: {output_dir}")
+    print(f"Output file: {output}")
     print(f"Wandb logging: {'Disabled' if args.no_wandb else 'Enabled'}")
     print("-" * 50)
-    
-    evaluate_all_checkpoints(args.config, args.checkpoint_dir, args.output, use_wandb=not args.no_wandb)
+
+    evaluate_all_checkpoints(args.config, args.checkpoint_dir, output, use_wandb=not args.no_wandb)
 
 if __name__ == "__main__":
     main()

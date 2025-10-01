@@ -144,7 +144,7 @@ class OriginalWorkspaceCheckpointCallback(pl.Callback):
             
             # Log to wandb
             for key, value in runner_log.items():
-                pl_module.log(f'env/{key}', value, step=current_epoch if current_epoch else 0, sync_dist=True)
+                pl_module.log(f'env/{key}', value, sync_dist=True)
         else:
             print("Warning: env_runner is not set, skipping environment evaluation.")
         
