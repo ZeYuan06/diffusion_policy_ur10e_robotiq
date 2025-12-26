@@ -1,36 +1,36 @@
 <?xml version="1.0"?>
 <robot name="ur10e_robotiq" xmlns="http://www.ros.org/schema/srdf">
 
-  <!-- Virtual joint: world → base_link -->
+  <!-- Virtual Joint: world → base_link -->
   <virtual_joint name="world_joint" type="fixed">
     <parent_frame>world</parent_frame>
     <child_link>base_link</child_link>
   </virtual_joint>
 
-  <!-- Planning group: robotic arm -->
+  <!-- Planning Group: Arm -->
   <group name="arm">
     <!-- Define a joint chain from base_link to eef -->
     <chain base_link="base_link" tip_link="eef"/>
   </group>
 
-  <!-- Planning group: gripper -->
+  <!-- Planning Group: Gripper -->
   <group name="gripper">
-    <!-- Only plan for the two outer joints, the inner joints are automatically driven by mimic -->
+    <!-- Only plan for the two outer joints, the inner joints are driven automatically by mimic -->
     <joint name="left_outer_knuckle_joint"/>
     <joint name="right_outer_knuckle_joint"/>
   </group>
 
-  <!-- Define the end effector: eef -->
+  <!-- Define End Effector: eef -->
   <end_effector name="eef" group="arm" parent_link="flange" component_link="eef"/>
 
-  <!-- Passive joints (mimic) do not require planner control -->
+  <!-- Passive Joints (mimic) do not require planner control -->
   <passive_joint name="left_inner_knuckle_joint"/>
   <passive_joint name="left_inner_finger_joint"/>
   <passive_joint name="right_inner_knuckle_joint"/>
   <passive_joint name="right_inner_finger_joint"/>
 
-  <!-- Preset posture: rest, corresponding to your Keyframe -->
-  <group_state name="rest" group="arm">
+  <!-- Preset Pose: home, corresponding to your Keyframe -->
+  <group_state name="home" group="arm">
     <!-- qpos: [0, -1.5708, 1.5708, -1.5708, -1.5708, -1.5708] -->
     <joint name="shoulder_pan_joint"    value="0"/>
     <joint name="shoulder_lift_joint"   value="-1.5708"/>

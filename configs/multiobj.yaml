@@ -22,7 +22,7 @@ ema:
   power: 0.75
   update_after_step: 0
 exp_name: default
-horizon: 32
+horizon: 8
 keypoint_visible_rate: 1.0
 logging:
   group: null
@@ -64,7 +64,7 @@ policy:
   - 1024
   - 2048
   eval_fixed_crop: true
-  horizon: 32
+  horizon: 8
   kernel_size: 5
   n_action_steps: 8
   n_groups: 8
@@ -88,7 +88,7 @@ policy:
     obs:
       agent_pos:
         shape:
-        - 14
+        - 7
         type: low_dim
       base_image:
         shape:
@@ -109,7 +109,7 @@ shape_meta:
   obs:
     agent_pos:
       shape:
-      - 14
+      - 7
       type: low_dim
     base_image:
       shape:
@@ -126,22 +126,21 @@ shape_meta:
 task:
   dataset:
     _target_: diffusion_policy.dataset.multicamera_dataset.StackCubeUR10EDataset
-    horizon: 32
+    horizon: 8
     max_train_episodes: 90
     pad_after: 7
     pad_before: 1
     seed: 42
     val_ratio: 0.01
-    zarr_path: data/multiobj_data.zarr
+    zarr_path: data/demos.zarr
     load_existing_val_mask: false
   env_runner:
     _target_: diffusion_policy.env_runner.stack_cube_image_runner.StackCubeImageRunner
     max_steps: 400
-    n_action_steps: 8
-    env_id: PickBox-v1
+    n_action_steps: 4
+    env_id: PickBox-custom
     n_obs_steps: 2
     n_test: 4
-    n_test_vis: 4
     test_start_seed: 100000
   image_shape:
   - 3
@@ -155,7 +154,7 @@ task:
     obs:
       agent_pos:
         shape:
-        - 14
+        - 7
         type: low_dim
       image:
         shape:
@@ -176,7 +175,7 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null
   max_val_steps: null
-  num_epochs: 160
+  num_epochs: 150
   resume: true
   rollout_every: 700
   sample_every: 700

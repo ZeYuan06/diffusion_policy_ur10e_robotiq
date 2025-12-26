@@ -1,7 +1,7 @@
 #!/bin/bash
 
 export HYDRA_FULL_ERROR=1
-export CUDA_VISIBLE_DEVICES=5,6
+export CUDA_VISIBLE_DEVICES=1,2
 
 LOG_DIR="logs"
 mkdir -p ${LOG_DIR}
@@ -18,13 +18,13 @@ nohup python train.py \
 TRAIN_PID=$!
 
 # Write PID information to the log file
-echo "================== Training Process Information ==================" >> "${LOG_FILE}"
-echo "Training started at: $(date)" >> "${LOG_FILE}"
-echo "Training PID: $TRAIN_PID" >> "${LOG_FILE}"
-echo "Log file: $LOG_FILE" >> "${LOG_FILE}"
-echo "CUDA devices: $CUDA_VISIBLE_DEVICES" >> "${LOG_FILE}"
-echo "=================================================================" >> "${LOG_FILE}"
-echo "" >> "${LOG_FILE}"
+echo "================== Training Process Information ==================" &>> "${LOG_FILE}"
+echo "Training started at: $(date)" &>> "${LOG_FILE}"
+echo "Training PID: $TRAIN_PID" &>> "${LOG_FILE}"
+echo "Log file: $LOG_FILE" &>> "${LOG_FILE}"
+echo "CUDA devices: $CUDA_VISIBLE_DEVICES" &>> "${LOG_FILE}"
+echo "=================================================================" &>> "${LOG_FILE}"
+echo "" &>> "${LOG_FILE}"
 
 # Also display on console
 echo "Training started with PID: $TRAIN_PID"
