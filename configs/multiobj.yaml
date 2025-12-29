@@ -38,9 +38,9 @@ logging:
 multi_run:
   run_dir: data/outputs/2023.01.16/20.20.06_train_diffusion_unet_hybrid_stackcube_ur10e_image
   wandb_name_base: 2025.08_train_diffusion_multi_camera_obj_ur10e_image
-n_action_steps: 8
+n_action_steps: 4
 n_latency_steps: 0
-n_obs_steps: 2
+n_obs_steps: 4
 name: train_diffusion_unet_hybrid_multi_camera
 obs_as_global_cond: true
 optimizer:
@@ -66,9 +66,9 @@ policy:
   eval_fixed_crop: true
   horizon: 8
   kernel_size: 5
-  n_action_steps: 8
+  n_action_steps: 4
   n_groups: 8
-  n_obs_steps: 2
+  n_obs_steps: 4
   noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
     beta_end: 0.02
@@ -137,9 +137,8 @@ task:
   env_runner:
     _target_: diffusion_policy.env_runner.stack_cube_image_runner.StackCubeImageRunner
     max_steps: 400
-    n_action_steps: 4
     env_id: PickBox-custom
-    n_obs_steps: 2
+    n_obs_steps: 4
     n_test: 4
     test_start_seed: 100000
   image_shape:

@@ -19,7 +19,6 @@ from pytorch_lightning.loggers import WandbLogger
 
 from diffusion_policy.workspace.train_diffusion_unet_multigpu_workspace import (
     TrainDiffusionUnetMultiGpuWorkspace,
-    DiffusionPolicyMultiGpuLightningModule,
     DiffusionMultiGpuDataModule,
     OriginalWorkspaceCheckpointCallback,
 )
@@ -211,8 +210,6 @@ def evaluate_single_checkpoint(
         )
 
         # Create sampling batch from validation data
-        from torch.utils.data import DataLoader
-
         val_dataloader = data_module.val_dataloader()
         sampling_batch = next(iter(val_dataloader))
         from diffusion_policy.common.pytorch_util import dict_apply
@@ -349,7 +346,7 @@ def evaluate_all_checkpoints(config_path, checkpoint_dir, output_csv, use_wandb=
 
     results = []
 
-    for i, ckpt_path in enumerate(checkpoint_files):
+    for i, ckpt_path in enumerate(checkpoint_files[-4:]):
         print(f"\n--- Evaluating checkpoint {i+1}/{len(checkpoint_files)} ---")
 
         result = evaluate_single_checkpoint(
@@ -363,13 +360,6 @@ def evaluate_all_checkpoints(config_path, checkpoint_dir, output_csv, use_wandb=
             temp_csv = output_csv.replace(".csv", "_temp.csv")
             df_temp = pd.DataFrame(results)
             df_temp.to_csv(temp_csv, index=False)
-
-            # Log progress to wandb
-            # if use_wandb and wandb_logger and hasattr(wandb_logger, 'experiment'):
-            #     wandb_logger.experiment.log({
-            #         'eval_meta/progress': (i + 1) / len(checkpoint_files),
-            #         'eval_meta/completed_evaluations': len(results)
-            #     })
 
     # Save final results
     if results:

@@ -89,7 +89,6 @@ class StackCubeImageRunner(BaseImageRunner):
         test_start_seed=10000,
         max_steps=200,
         n_obs_steps=8,
-        n_action_steps=8,
         tqdm_interval_sec=5.0,
     ):
         """
@@ -119,7 +118,6 @@ class StackCubeImageRunner(BaseImageRunner):
         self.test_start_seed = test_start_seed
         self.max_steps = max_steps
         self.n_obs_steps = n_obs_steps
-        self.n_action_steps = n_action_steps
         self.tqdm_interval_sec = tqdm_interval_sec
 
     def run(self, policy: BaseImagePolicy, current_step=None) -> Dict:
@@ -143,7 +141,6 @@ class StackCubeImageRunner(BaseImageRunner):
                 obj_file = item / "textured.obj"
                 if obj_file.exists():
                     all_obj_paths.append(str(obj_file))
-
 
         box_obj_path = str(assets_dir / "005_tomato_soup_can" / "textured.obj")
         env = gym.make(
@@ -170,42 +167,41 @@ class StackCubeImageRunner(BaseImageRunner):
                 # Usually it records all if not specified, or we can filter later.
             )
 
-        try:
-            # Reset Environment
-            seeds = [self.test_start_seed + i for i in range(n_envs)]
-            obs, info = env.reset(seed=seeds)
+        # Reset Environment
+        seeds = [self.test_start_seed + i for i in range(n_envs)]
+        obs, info = env.reset(seed=seeds)
 
-            # Initialize Observation History
-            # obs_deque will contain dictionaries where values are [B, ...] tensors
-            obs_deque = collections.deque(maxlen=self.n_obs_steps)
-            # Initial process
-            batch_obs = process_batch_obs(obs, env.unwrapped, device, dtype)
-            for _ in range(self.n_obs_steps):
-                obs_deque.append(batch_obs)
+        # Initialize Observation History
+        # obs_deque will contain dictionaries where values are [B, ...] tensors
+        obs_deque = collections.deque(maxlen=self.n_obs_steps)
+        # Initial process
+        batch_obs = process_batch_obs(obs, env.unwrapped, device, dtype)
+        for _ in range(self.n_obs_steps):
+            obs_deque.append(batch_obs)
 
-            # Metrics Tracking
-            # Track max reward/success per environment index
-            max_rewards = torch.zeros(n_envs, device=device)
-            success_tracker = torch.zeros(n_envs, device=device, dtype=torch.bool)
+        # Metrics Tracking
+        # Track max reward/success per environment index
+        max_rewards = torch.zeros(n_envs, device=device)
+        success_tracker = torch.zeros(n_envs, device=device, dtype=torch.bool)
 
-            # Action buffer for Open-Loop execution
-            # We plan every n_action_steps
-            cached_actions = None
+        # Action buffer for Open-Loop execution
+        # We plan every n_action_steps
+        cached_actions = None
 
-            # 4. Main Evaluation Loop
-            pbar = tqdm.tqdm(
-                range(self.max_steps),
-                desc=f"Eval Parallel ({n_envs} envs)",
-                leave=False,
-                mininterval=self.tqdm_interval_sec,
-            )
-            step_in_plan = self.n_action_steps
-            cached_actions = None
+        # 4. Main Evaluation Loop
+        pbar = tqdm.tqdm(
+            range(self.max_steps),
+            desc=f"Eval Parallel ({n_envs} envs)",
+            leave=False,
+            mininterval=self.tqdm_interval_sec,
+        )
+        step_in_plan = 0
+        cached_actions = None
 
-            for step in pbar:
-                # Policy Inference
-                # Replan if we have finished executing the previous plan (step_in_plan >= n_action_steps)
-                if step_in_plan >= self.n_action_steps:
+        for step in pbar:
+            # Policy Inference
+            # Replan if we ran out of actions or haven't planned yet
+            if cached_actions is None or step_in_plan >= cached_actions.shape[1]:
                     # Stack observations: [B, T, ...]
                     policy_input = {}
                     for key in batch_obs.keys():
@@ -217,45 +213,46 @@ class StackCubeImageRunner(BaseImageRunner):
 
                     with torch.no_grad():
                         action_dict = policy.predict_action(policy_input)
-                        # [B, Tp, Action_Dim]
+                        # [B, Ta, Action_Dim]
                         cached_actions = action_dict["action"]
 
                     # Reset execution counter
                     step_in_plan = 0
 
-                # Execute Action
-                action_to_step = cached_actions[:, step_in_plan]
-                obs, reward, terminated, truncated, info = env.step(action_to_step)
-                step_in_plan += 1
+            # Execute Action
+            action_to_step = cached_actions[:, step_in_plan]
+            obs, reward, terminated, truncated, info = env.step(action_to_step)
+            step_in_plan += 1
 
-                # Update Metrics
-                current_rewards = reward.to(device)
+            # Update Metrics
+            current_rewards = reward.to(device)
 
-                # Update max reward seen so far
-                max_rewards = torch.maximum(max_rewards, current_rewards)
+            # Update max reward seen so far
+            max_rewards = torch.maximum(max_rewards, current_rewards)
 
-                # Update success
-                if "success" in info:
-                    is_success = info["success"]
-                    if isinstance(is_success, torch.Tensor):
-                        is_success = is_success.to(device)
-                    else:
-                        is_success = torch.tensor(is_success, device=device)
-                    success_tracker = success_tracker | is_success
+            # Update success
+            if "success" in info:
+                is_success = info["success"]
+                if isinstance(is_success, torch.Tensor):
+                    is_success = is_success.to(device)
+                else:
+                    is_success = torch.tensor(is_success, device=device)
+                success_tracker = success_tracker | is_success
 
-                # --- Update Observation ---
-                batch_obs = process_batch_obs(obs, env.unwrapped, device, dtype)
-                obs_deque.append(batch_obs)
+            # --- Update Observation ---
+            batch_obs = process_batch_obs(obs, env.unwrapped, device, dtype)
+            obs_deque.append(batch_obs)
 
-                pbar.set_postfix({
-                    "reward": f"{max_rewards.mean().item():.2f}",
-                    "success": f"{success_tracker.float().mean().item():.1%}"
-                })
+            if step % 10 == 0:
+                pbar.set_postfix(
+                    {
+                        "reward": f"{max_rewards.mean().item():.2f}",
+                        "success": f"{success_tracker.float().mean().item():.1%}",
+                    }
+                )
 
-            pbar.close()
-
-        finally:
-            env.close()
+        pbar.close()
+        env.close()
 
         # Logging and Results
         log_data = dict()
